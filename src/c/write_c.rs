@@ -86,15 +86,18 @@ impl WriteLine for TranslationUnit {
 impl WriteLine for ExternalDeclaration {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
         match self {
-            ExternalDeclaration::Declaration(decl) => decl.node.write_line(indent, write),
+            ExternalDeclaration::Declaration(decl) => {
+                write_indent(indent, write)?;
+                write!(write, "{};\n", decl.write_string())
+            }
             ExternalDeclaration::StaticAssert(sa) => sa.node.write_line(indent, write),
             ExternalDeclaration::FunctionDefinition(func) => func.node.write_line(indent, write),
         }
     }
 }
 
-impl WriteLine for Declaration {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+impl WriteString for Declaration {
+    fn write_string(&self) -> String {
         let specifiers = self
             .specifiers
             .iter()
@@ -105,8 +108,7 @@ impl WriteLine for Declaration {
             .iter()
             .map(|decl| decl.write_string())
             .join(" ");
-        write_indent(indent, write)?;
-        write!(write, "{} {};\n", specifiers, declarators)
+        specifiers + &" " + &declarators
     }
 }
 
@@ -183,9 +185,12 @@ impl WriteString for Declarator {
             .derived
             .clone()
             .iter()
-            .filter(|declarator| matches!(declarator.node, DerivedDeclarator::KRFunction(..)))
+            .filter(|declarator| {
+                matches!(declarator.node, DerivedDeclarator::KRFunction(..))
+                    || matches!(declarator.node, DerivedDeclarator::Function(..))
+            })
             .map(|declarator| declarator.write_string())
-            .join("");
+            .join(",");
         let pointers = self
             .derived
             .clone()
@@ -259,6 +264,9 @@ impl WriteString for BinaryOperatorExpression {
         let lhs = self.lhs.write_string();
         let rhs = self.rhs.write_string();
         let op = self.operator.write_string();
+        if op == "[]" {
+            return std::format!("{}[{}]", lhs, rhs);
+        }
         std::format!("({} {} {})", lhs, op, rhs)
     }
 }
@@ -303,6 +311,15 @@ impl WriteString for BinaryOperator {
 
 impl WriteString for UnaryOperatorExpression {
     fn write_string(&self) -> String {
+        if matches!(self.operator.node, UnaryOperator::PostDecrement)
+            || matches!(self.operator.node, UnaryOperator::PostIncrement)
+        {
+            return std::format!(
+                "({}{})",
+                self.operand.write_string(),
+                self.operator.write_string()
+            );
+        }
         std::format!(
             "({}{})",
             self.operator.write_string(),
@@ -390,7 +407,6 @@ impl WriteString for PointerQualifier {
 
 impl WriteString for ArrayDeclarator {
     fn write_string(&self) -> String {
-        println!("aaaaa");
         self.qualifiers.write_string() + &self.size.write_string()
     }
 }
@@ -461,9 +477,9 @@ impl WriteLine for FunctionDefinition {
             .map(|specifier| specifier.write_string())
             .join(" ");
         let declarator = self.declarator.write_string();
-        self.declarations.write_line(indent, write)?;
         write_indent(indent, write)?;
         write!(write, "{} {}\n", specifiers, declarator)?;
+        write!(write, "{}", self.declarations.write_string())?;
         self.statement.write_line(indent, write)
     }
 }
@@ -476,18 +492,18 @@ impl WriteLine for Statement {
                 write_indent(indent, write)?;
                 write!(write, "{{\n")?;
                 block_items.write_line(indent, write)?;
-                // block_items
-                //     .iter()
-                //     .for_each(|item| item.node.write_line(indent, write).unwrap());
                 write_indent(indent, write)?;
                 write!(write, "}}\n")
             }
-            Statement::Expression(_) => todo!("expression statement"),
+            Statement::Expression(expr) => {
+                write_indent(indent, write)?;
+                write!(write, "{};\n", expr.write_string())
+            }
             Statement::If(if_stmt) => if_stmt.node.write_line(indent, write),
             Statement::Switch(_) => todo!("switch statement"),
             Statement::While(_) => todo!("while statement"),
             Statement::DoWhile(_) => todo!("do-while statement"),
-            Statement::For(_) => todo!("for statement"),
+            Statement::For(for_stmt) => for_stmt.write_line(indent, write),
             Statement::Goto(_) => todo!("goto statement"),
             Statement::Continue => todo!("continue statement"),
             Statement::Break => todo!("break statement"),
@@ -504,10 +520,36 @@ impl WriteLine for Statement {
     }
 }
 
+impl WriteLine for ForStatement {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        write_indent(indent, write)?;
+        let initializer = self.initializer.write_string();
+        let condition = self.condition.write_string();
+        let step = self.step.write_string();
+        write!(write, "for ({}; {}; {})\n", initializer, condition, step)?;
+        self.statement.write_line(indent, write)
+    }
+}
+
+impl WriteString for ForInitializer {
+    fn write_string(&self) -> String {
+        match self {
+            ForInitializer::Empty => "".to_owned(),
+            ForInitializer::Expression(expr) => expr.write_string(),
+            ForInitializer::Declaration(decl) => decl.write_string(),
+            ForInitializer::StaticAssert(_) => unimplemented!("_StaticAssert for"),
+        }
+    }
+}
+
 impl WriteLine for BlockItem {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
         match self {
-            BlockItem::Declaration(decl) => decl.node.write_line(indent + 1, write),
+            BlockItem::Declaration(decl) => {
+                let decl = decl.write_string();
+                write_indent(indent + 1, write)?;
+                write!(write, "{};\n", decl)
+            }
             BlockItem::StaticAssert(static_assert) => {
                 static_assert.node.write_line(indent + 1, write)
             }

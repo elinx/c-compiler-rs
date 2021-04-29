@@ -27,6 +27,7 @@ impl<P: AsRef<Path>> Translate<P> for Parse {
         let ast = parse(&config, source).map_err(Error::ParseError)?;
         let unit = ast.unit;
 
+        // println!("{:#?}", &unit);
         unit.assert_supported();
         Ok(unit)
     }
