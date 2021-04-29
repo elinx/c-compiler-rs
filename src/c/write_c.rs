@@ -282,7 +282,11 @@ impl WriteString for Constant {
 impl WriteString for CallExpression {
     fn write_string(&self) -> String {
         let callee = self.callee.write_string();
-        let arguments = self.arguments.write_string();
+        let arguments = self
+            .arguments
+            .iter()
+            .map(|expr| expr.write_string())
+            .join(", ");
         std::format!("{}({})", callee, arguments)
     }
 }
