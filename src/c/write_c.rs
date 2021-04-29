@@ -12,6 +12,64 @@ impl<T: WriteLine> WriteLine for Node<T> {
     }
 }
 
+impl<T: WriteLine> WriteLine for Box<T> {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        self.deref().write_line(indent, write)
+    }
+}
+
+impl<T: WriteLine> WriteLine for &T {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        (*self).write_line(indent, write)
+    }
+}
+
+impl<T: WriteLine> WriteLine for Option<T> {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        if let Some(this) = self {
+            this.write_line(indent, write)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<T: WriteLine> WriteLine for Vec<T> {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        Ok(for item in self {
+            item.write_line(indent, write)?;
+        })
+    }
+}
+
+impl<T: WriteString> WriteString for Node<T> {
+    fn write_string(&self) -> String {
+        self.node.write_string()
+    }
+}
+
+impl<T: WriteString> WriteString for Box<T> {
+    fn write_string(&self) -> String {
+        self.deref().write_string()
+    }
+}
+
+impl<T: WriteString> WriteString for &T {
+    fn write_string(&self) -> String {
+        (*self).write_string()
+    }
+}
+
+impl<T: WriteString> WriteString for Option<T> {
+    fn write_string(&self) -> String {
+        if let Some(this) = self {
+            this.write_string()
+        } else {
+            "".to_string()
+        }
+    }
+}
+
 fn write_indent(indent: usize, write: &mut dyn Write) -> Result<()> {
     write!(write, "{0: <1$}", "", indent * 4)
 }
@@ -87,19 +145,6 @@ impl WriteLine for Declaration {
         self.declarators
             .iter()
             .for_each(|decl| decl.node.write_line(indent, write).unwrap());
-        // for (specifier, declarator) in self.specifiers.iter().zip(self.declarators.iter()) {
-        //     specifier.node.write_line(indent, write)?;
-        //     write_space(write)?;
-        //     declarator.node.declarator.node.write_line(indent, write)?;
-        //     write_space(write)?;
-        //     write_eq(write)?;
-        //     write_space(write)?;
-        //     if let Some(initializer) = &declarator.node.initializer {
-        //         initializer.node.write_line(indent, write)?;
-        //     }
-        //     write_semicolon(write)?;
-        //     write_newline(write)?;
-        // }
         write_semicolon(write)?;
         write_newline(write)?;
         Ok(())
@@ -118,6 +163,7 @@ impl WriteLine for InitDeclarator {
         Ok(())
     }
 }
+
 impl WriteLine for Declarator {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
         self.kind.node.write_line(indent, write)?;
@@ -134,8 +180,11 @@ impl WriteLine for Declarator {
 impl WriteLine for DerivedDeclarator {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
         match self {
-            DerivedDeclarator::Pointer(_) => todo!("pointer ddtor"),
-            DerivedDeclarator::Array(_) => todo!("array ddtor"),
+            DerivedDeclarator::Pointer(ptr) => {
+                write!(write, "*")?;
+                ptr.write_line(indent, write)
+            }
+            DerivedDeclarator::Array(array) => array.write_line(indent, write),
             DerivedDeclarator::Function(func_decl) => func_decl.node.write_line(indent, write),
             DerivedDeclarator::KRFunction(func) => {
                 write!(write, "(")?;
@@ -144,6 +193,41 @@ impl WriteLine for DerivedDeclarator {
                 write!(write, ")")
             }
         }
+    }
+}
+
+impl WriteLine for PointerQualifier {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        match self {
+            PointerQualifier::TypeQualifier(typ) => typ.write_line(indent, write),
+            PointerQualifier::Extension(ext) => ext.write_line(indent, write),
+        }
+    }
+}
+
+impl WriteLine for ArrayDeclarator {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        self.qualifiers.write_line(indent, write)?;
+        self.size.write_line(indent, write)
+    }
+}
+
+impl WriteLine for ArraySize {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        write!(write, "[")?;
+        let str = match self {
+            ArraySize::Unknown => "[]",
+            ArraySize::VariableUnknown => "[*]",
+            ArraySize::VariableExpression(expr) => {
+                expr.write_line(indent, write)?;
+                ""
+            }
+            ArraySize::StaticExpression(_expr) => {
+                _expr.write_line(indent, write)?;
+                ""
+            }
+        };
+        write!(write, "{}]", str)
     }
 }
 
@@ -503,34 +587,6 @@ impl WriteLine for IfStatement {
             else_stmt.as_ref().node.write_line(indent, write)?;
         };
         Ok(())
-    }
-}
-
-impl<T: WriteString> WriteString for Node<T> {
-    fn write_string(&self) -> String {
-        self.node.write_string()
-    }
-}
-
-impl<T: WriteString> WriteString for Box<T> {
-    fn write_string(&self) -> String {
-        self.deref().write_string()
-    }
-}
-
-impl<T: WriteString> WriteString for &T {
-    fn write_string(&self) -> String {
-        (*self).write_string()
-    }
-}
-
-impl<T: WriteString> WriteString for Option<T> {
-    fn write_string(&self) -> String {
-        if let Some(this) = self {
-            this.write_string()
-        } else {
-            "".to_string()
-        }
     }
 }
 
