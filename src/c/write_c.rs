@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use lang_c::ast::*;
 use lang_c::span::Node;
 
@@ -9,6 +10,40 @@ use crate::write_base::*;
 impl<T: WriteLine> WriteLine for Node<T> {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
         self.node.write_line(indent, write)
+    }
+}
+
+impl<T: WriteString> WriteString for Node<T> {
+    fn write_string(&self) -> String {
+        self.node.write_string()
+    }
+}
+
+impl<T: WriteString> WriteString for Box<T> {
+    fn write_string(&self) -> String {
+        self.deref().write_string()
+    }
+}
+
+impl<T: WriteString> WriteString for &T {
+    fn write_string(&self) -> String {
+        (*self).write_string()
+    }
+}
+
+impl<T: WriteString> WriteString for Option<T> {
+    fn write_string(&self) -> String {
+        if let Some(this) = self {
+            this.write_string()
+        } else {
+            "".to_string()
+        }
+    }
+}
+
+impl<T: WriteString> WriteString for Vec<T> {
+    fn write_string(&self) -> String {
+        self.iter().map(|param| param.write_string()).join(" ")
     }
 }
 
@@ -42,375 +77,195 @@ impl<T: WriteLine> WriteLine for Vec<T> {
     }
 }
 
-impl<T: WriteString> WriteString for Node<T> {
-    fn write_string(&self) -> String {
-        self.node.write_string()
+impl WriteLine for TranslationUnit {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        self.0.write_line(indent, write)
     }
-}
-
-impl<T: WriteString> WriteString for Box<T> {
-    fn write_string(&self) -> String {
-        self.deref().write_string()
-    }
-}
-
-impl<T: WriteString> WriteString for &T {
-    fn write_string(&self) -> String {
-        (*self).write_string()
-    }
-}
-
-impl<T: WriteString> WriteString for Option<T> {
-    fn write_string(&self) -> String {
-        if let Some(this) = self {
-            this.write_string()
-        } else {
-            "".to_string()
-        }
-    }
-}
-
-fn write_indent(indent: usize, write: &mut dyn Write) -> Result<()> {
-    write!(write, "{0: <1$}", "", indent * 4)
-}
-
-fn write_space(write: &mut dyn Write) -> Result<()> {
-    write!(write, " ")
-}
-
-fn write_eq(write: &mut dyn Write) -> Result<()> {
-    write!(write, "=")
-}
-
-fn write_semicolon(write: &mut dyn Write) -> Result<()> {
-    write!(write, ";")
-}
-
-fn write_newline(write: &mut dyn Write) -> Result<()> {
-    write!(write, "\n")
 }
 
 impl WriteLine for ExternalDeclaration {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
         match self {
-            ExternalDeclaration::Declaration(decl) => {
-                decl.node.write_line(indent, write)?;
-            }
-            ExternalDeclaration::StaticAssert(sa) => {
-                sa.node.write_line(indent, write)?;
-            }
-            ExternalDeclaration::FunctionDefinition(func) => {
-                func.node.write_line(indent, write)?;
-            }
+            ExternalDeclaration::Declaration(decl) => decl.node.write_line(indent, write),
+            ExternalDeclaration::StaticAssert(sa) => sa.node.write_line(indent, write),
+            ExternalDeclaration::FunctionDefinition(func) => func.node.write_line(indent, write),
         }
-        // write!(write, "external declaration: {}\n", indent)
-        Ok(())
-    }
-}
-
-impl WriteLine for DeclarationSpecifier {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        match self {
-            DeclarationSpecifier::Alignment(alignment_specifier) => {
-                alignment_specifier.node.write_line(indent, write)?;
-            }
-            DeclarationSpecifier::Extension(extension) => {
-                extension
-                    .iter()
-                    .for_each(|ext| ext.node.write_line(indent, write).unwrap());
-            }
-            DeclarationSpecifier::Function(function) => {
-                function.node.write_line(indent, write)?;
-            }
-            DeclarationSpecifier::StorageClass(storage) => {
-                storage.node.write_line(indent, write)?;
-            }
-            DeclarationSpecifier::TypeQualifier(tq) => {
-                tq.node.write_line(indent, write)?;
-            }
-            DeclarationSpecifier::TypeSpecifier(ts) => {
-                ts.node.write_line(indent, write)?;
-            }
-        }
-        Ok(())
     }
 }
 
 impl WriteLine for Declaration {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        self.specifiers
+        let specifiers = self
+            .specifiers
             .iter()
-            .for_each(|specifier| specifier.node.write_line(indent, write).unwrap());
-        write_space(write)?;
-        self.declarators
+            .map(|specifier| specifier.write_string())
+            .join(" ");
+        let declarators = self
+            .declarators
             .iter()
-            .for_each(|decl| decl.node.write_line(indent, write).unwrap());
-        write_semicolon(write)?;
-        write_newline(write)?;
-        Ok(())
+            .map(|decl| decl.write_string())
+            .join(" ");
+        write_indent(indent, write)?;
+        write!(write, "{} {};\n", specifiers, declarators)
     }
 }
 
-impl WriteLine for InitDeclarator {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        self.declarator.node.write_line(indent, write)?;
-        write_space(write)?;
-        write_eq(write)?;
-        write_space(write)?;
+impl WriteString for DeclarationSpecifier {
+    fn write_string(&self) -> String {
+        match self {
+            DeclarationSpecifier::StorageClass(storage_class) => storage_class.write_string(),
+            DeclarationSpecifier::TypeSpecifier(type_specifier) => type_specifier.write_string(),
+            DeclarationSpecifier::TypeQualifier(type_qualifier) => type_qualifier.write_string(),
+            DeclarationSpecifier::Function(_) => unimplemented!("function specifier"),
+            DeclarationSpecifier::Alignment(_) => unimplemented!("alignment"),
+            DeclarationSpecifier::Extension(_) => unimplemented!("extension"),
+        }
+    }
+}
+
+impl WriteString for StorageClassSpecifier {
+    fn write_string(&self) -> String {
+        match self {
+            StorageClassSpecifier::Typedef => "typedef".to_owned(),
+            StorageClassSpecifier::Extern => "extern".to_owned(),
+            StorageClassSpecifier::Static => "static".to_owned(),
+            StorageClassSpecifier::ThreadLocal => "_Thread_local".to_owned(),
+            StorageClassSpecifier::Auto => "auto".to_owned(),
+            StorageClassSpecifier::Register => "register".to_owned(),
+        }
+    }
+}
+
+impl WriteString for TypeSpecifier {
+    fn write_string(&self) -> String {
+        match self {
+            TypeSpecifier::Void => "void".to_owned(),
+            TypeSpecifier::Char => "char".to_owned(),
+            TypeSpecifier::Short => "short".to_owned(),
+            TypeSpecifier::Int => "int".to_owned(),
+            TypeSpecifier::Long => "long".to_owned(),
+            TypeSpecifier::Float => "float".to_owned(),
+            TypeSpecifier::Double => "double".to_owned(),
+            TypeSpecifier::Signed => "signed".to_owned(),
+            TypeSpecifier::Unsigned => "unsigned".to_owned(),
+            TypeSpecifier::Bool => "bool".to_owned(),
+            TypeSpecifier::Complex => unimplemented!("complex not implement"),
+            TypeSpecifier::Atomic(_) => unimplemented!("atomic not implement"),
+            TypeSpecifier::Struct(_) => "struct".to_owned(),
+            TypeSpecifier::Enum(_) => unimplemented!("atomic not implement"),
+            TypeSpecifier::TypedefName(_) => "typedef".to_owned(),
+            TypeSpecifier::TypeOf(_) => unimplemented!("atomic not implement"),
+            TypeSpecifier::TS18661Float(_) => unimplemented!("atomic not implement"),
+        }
+    }
+}
+
+impl WriteString for TypeQualifier {
+    fn write_string(&self) -> String {
+        unimplemented!("type qualifier")
+    }
+}
+
+impl WriteString for InitDeclarator {
+    fn write_string(&self) -> String {
+        let declarator = self.declarator.write_string();
         if let Some(initializer) = &self.initializer {
-            initializer.write_line(indent, write)?;
-        };
-        Ok(())
+            return std::format!("{} = {}", declarator, initializer.write_string());
+        }
+        declarator
     }
 }
 
-impl WriteLine for Declarator {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        self.kind.node.write_line(indent, write)?;
-        self.derived
+impl WriteString for Declarator {
+    fn write_string(&self) -> String {
+        let kind = self.kind.write_string();
+        let krfunction = self
+            .derived
+            .clone()
             .iter()
-            .for_each(|node| node.write_line(indent, write).unwrap());
-        self.extensions
+            .filter(|declarator| matches!(declarator.node, DerivedDeclarator::KRFunction(..)))
+            .map(|declarator| declarator.write_string())
+            .join("");
+        let pointers = self
+            .derived
+            .clone()
             .iter()
-            .for_each(|node| node.write_line(indent, write).unwrap());
-        Ok(())
-    }
-}
-
-impl WriteLine for DerivedDeclarator {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        match self {
-            DerivedDeclarator::Pointer(ptr) => {
-                write!(write, "*")?;
-                ptr.write_line(indent, write)
-            }
-            DerivedDeclarator::Array(array) => array.write_line(indent, write),
-            DerivedDeclarator::Function(func_decl) => func_decl.node.write_line(indent, write),
-            DerivedDeclarator::KRFunction(func) => {
-                write!(write, "(")?;
-                func.iter()
-                    .for_each(|id| id.write_line(indent, write).unwrap());
-                write!(write, ")")
-            }
-        }
-    }
-}
-
-impl WriteLine for PointerQualifier {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        match self {
-            PointerQualifier::TypeQualifier(typ) => typ.write_line(indent, write),
-            PointerQualifier::Extension(ext) => ext.write_line(indent, write),
-        }
-    }
-}
-
-impl WriteLine for ArrayDeclarator {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        self.qualifiers.write_line(indent, write)?;
-        self.size.write_line(indent, write)
-    }
-}
-
-impl WriteLine for ArraySize {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        write!(write, "[")?;
-        let str = match self {
-            ArraySize::Unknown => "[]",
-            ArraySize::VariableUnknown => "[*]",
-            ArraySize::VariableExpression(expr) => {
-                expr.write_line(indent, write)?;
-                ""
-            }
-            ArraySize::StaticExpression(_expr) => {
-                _expr.write_line(indent, write)?;
-                ""
-            }
-        };
-        write!(write, "{}]", str)
-    }
-}
-
-impl WriteLine for FunctionDeclarator {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        write!(write, "(")?;
-        self.parameters
+            .filter(|declarator| matches!(declarator.node, DerivedDeclarator::Pointer(..)))
+            .map(|declarator| declarator.write_string())
+            .join("");
+        let array = self
+            .derived
+            .clone()
             .iter()
-            .for_each(|param| param.node.write_line(indent, write).unwrap());
-        self.ellipsis.write_line(indent, write)?;
-        write!(write, ")")
+            .filter(|declarator| matches!(declarator.node, DerivedDeclarator::Array(..)))
+            .map(|derved| derved.write_string())
+            .join("");
+        pointers + &kind + &krfunction + &array
     }
 }
 
-impl WriteLine for ParameterDeclaration {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        self.specifiers
-            .iter()
-            .for_each(|specifier| specifier.node.write_line(indent, write).unwrap());
-        if let Some(declarator) = &self.declarator {
-            declarator.node.write_line(indent, write)?;
-        }
-        self.extensions
-            .iter()
-            .for_each(|ext| ext.node.write_line(indent, write).unwrap());
-        Ok(())
-    }
-}
-
-impl WriteLine for Ellipsis {
-    fn write_line(&self, _indent: usize, _write: &mut dyn Write) -> Result<()> {
+impl WriteString for Expression {
+    fn write_string(&self) -> String {
         match self {
-            Ellipsis::Some => todo!("ellipsis some"),
-            Ellipsis::None => Ok(()),
+            Expression::Identifier(id) => id.write_string(),
+            Expression::Constant(cst) => cst.write_string(),
+            // Expression::StringLiteral(_) => {}
+            // Expression::GenericSelection(_) => {}
+            // Expression::Member(_) => {}
+            Expression::Call(call) => call.write_string(),
+            // Expression::CompoundLiteral(_) => {}
+            // Expression::SizeOf(_) => {}
+            // Expression::AlignOf(_) => {}
+            Expression::UnaryOperator(uop) => uop.write_string(),
+            // Expression::Cast(_) => {}
+            Expression::BinaryOperator(binop) => binop.write_string(),
+            // Expression::Conditional(_) => {}
+            // Expression::Comma(_) => {}
+            // Expression::OffsetOf(_) => {}
+            // Expression::VaArg(_) => {}
+            // Expression::Statement(_) => {}
+            _ => "".to_owned(),
         }
     }
 }
 
-impl WriteLine for DeclaratorKind {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+impl WriteString for Identifier {
+    fn write_string(&self) -> String {
+        self.name.clone()
+    }
+}
+
+impl WriteString for Constant {
+    fn write_string(&self) -> String {
         match self {
-            DeclaratorKind::Abstract => todo!("abstract declarator kind"),
-            DeclaratorKind::Identifier(id) => {
-                id.node.write_line(indent, write)?;
-            }
-            DeclaratorKind::Declarator(decl) => {
-                decl.as_ref().node.write_line(indent, write)?;
-            }
+            Constant::Integer(integer) => integer.write_string(),
+            // Constant::Float(_) => {}
+            // Constant::Character(_) => {}
+            _ => unimplemented!("float, char NYI"),
         }
-        Ok(())
     }
 }
 
-impl WriteLine for Identifier {
-    fn write_line(&self, _indent: usize, write: &mut dyn Write) -> Result<()> {
-        write!(write, "{}", self.name)
+impl WriteString for CallExpression {
+    fn write_string(&self) -> String {
+        let callee = self.callee.write_string();
+        let arguments = self.arguments.write_string();
+        std::format!("{}({})", callee, arguments)
     }
 }
 
-impl WriteLine for Constant {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+impl WriteString for BinaryOperatorExpression {
+    fn write_string(&self) -> String {
+        let lhs = self.lhs.write_string();
+        let rhs = self.rhs.write_string();
+        let op = self.operator.write_string();
+        std::format!("({} {} {})", lhs, op, rhs)
+    }
+}
+
+impl WriteString for BinaryOperator {
+    fn write_string(&self) -> String {
         match self {
-            Constant::Integer(integer) => integer.write_line(indent, write),
-            Constant::Float(_) => todo!("const float"),
-            Constant::Character(_) => todo!("const character"),
-        }
-    }
-}
-
-impl WriteLine for Integer {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        match self.base {
-            IntegerBase::Decimal => write!(write, "")?,
-            IntegerBase::Octal => write!(write, "0o")?,
-            IntegerBase::Hexadecimal => write!(write, "0x")?,
-        }
-        write!(write, "{}", self.number.as_ref())?;
-        self.suffix.write_line(indent, write)
-    }
-}
-
-impl WriteLine for IntegerSuffix {
-    fn write_line(&self, _indent: usize, write: &mut dyn Write) -> Result<()> {
-        if self.unsigned {
-            write!(write, "u")?;
-        }
-        let s = match self.size {
-            IntegerSize::Int => "",
-            IntegerSize::Long => "l",
-            IntegerSize::LongLong => "ll",
-        };
-        write!(write, "{}", s)?;
-        Ok(())
-    }
-}
-
-impl WriteLine for Initializer {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        match self {
-            Initializer::Expression(expr) => expr.as_ref().node.write_line(indent, write)?,
-            Initializer::List(_list) => todo!("initializer list"),
-        }
-        Ok(())
-    }
-}
-
-impl WriteLine for Expression {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        match self {
-            Expression::Identifier(id) => id.as_ref().node.write_line(indent, write)?,
-            Expression::Constant(cst) => cst.as_ref().node.write_line(indent, write)?,
-            Expression::StringLiteral(_) => {}
-            Expression::GenericSelection(_) => {}
-            Expression::Member(_) => {}
-            Expression::Call(call) => call.as_ref().node.write_line(indent, write)?,
-            Expression::CompoundLiteral(_) => {}
-            Expression::SizeOf(_) => {}
-            Expression::AlignOf(_) => {}
-            Expression::UnaryOperator(unary) => unary.deref().node.write_line(indent, write)?,
-            Expression::Cast(_) => {}
-            Expression::BinaryOperator(binop) => binop.as_ref().node.write_line(indent, write)?,
-            Expression::Conditional(_) => {}
-            Expression::Comma(_) => {}
-            Expression::OffsetOf(_) => {}
-            Expression::VaArg(_) => {}
-            Expression::Statement(_) => {}
-        }
-        Ok(())
-    }
-}
-
-impl WriteLine for UnaryOperatorExpression {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        write!(write, "(")?;
-        self.operator.write_line(indent, write)?;
-        self.operand.deref().node.write_line(indent, write)?;
-        write!(write, ")")
-    }
-}
-
-impl WriteLine for UnaryOperator {
-    fn write_line(&self, _indent: usize, write: &mut dyn Write) -> Result<()> {
-        let ops = match self {
-            UnaryOperator::PostIncrement => "++",
-            UnaryOperator::PostDecrement => "--",
-            UnaryOperator::PreIncrement => "++",
-            UnaryOperator::PreDecrement => "--",
-            UnaryOperator::Address => "&",
-            UnaryOperator::Indirection => "*",
-            UnaryOperator::Plus => "+",
-            UnaryOperator::Minus => "-",
-            UnaryOperator::Complement => "~",
-            UnaryOperator::Negate => "-",
-            UnaryOperator::SizeOf => "sizeof",
-        };
-        write!(write, "{}", ops)
-    }
-}
-
-impl WriteLine for CallExpression {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        self.callee.as_ref().node.write_line(indent, write)?;
-        write!(write, "(")?;
-        self.arguments
-            .iter()
-            .for_each(|arg| arg.node.write_line(indent, write).unwrap());
-        write!(write, ")")
-    }
-}
-
-impl WriteLine for BinaryOperatorExpression {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        self.lhs.as_ref().node.write_line(indent, write)?;
-        write_space(write)?;
-        self.operator.node.write_line(indent, write)?;
-        write_space(write)?;
-        self.rhs.as_ref().node.write_line(indent, write)
-    }
-}
-
-impl WriteLine for BinaryOperator {
-    fn write_line(&self, _indent: usize, write: &mut dyn Write) -> Result<()> {
-        let opstr = match self {
             BinaryOperator::Index => "[]",
             BinaryOperator::Multiply => "*",
             BinaryOperator::Divide => "/",
@@ -441,84 +296,175 @@ impl WriteLine for BinaryOperator {
             BinaryOperator::AssignBitwiseAnd => "&=",
             BinaryOperator::AssignBitwiseXor => "^=",
             BinaryOperator::AssignBitwiseOr => "|=",
-        };
-        write!(write, "{}", opstr)
+        }
+        .to_owned()
     }
 }
 
-impl WriteLine for AlignmentSpecifier {
-    fn write_line(&self, _indent: usize, _write: &mut dyn Write) -> Result<()> {
-        todo!("alignment specifier");
+impl WriteString for UnaryOperatorExpression {
+    fn write_string(&self) -> String {
+        std::format!(
+            "({}{})",
+            self.operator.write_string(),
+            self.operand.write_string()
+        )
     }
 }
 
-impl WriteLine for Extension {
-    fn write_line(&self, _indent: usize, _write: &mut dyn Write) -> Result<()> {
-        todo!("extension");
+impl WriteString for UnaryOperator {
+    fn write_string(&self) -> String {
+        match self {
+            UnaryOperator::PostIncrement => "++",
+            UnaryOperator::PostDecrement => "--",
+            UnaryOperator::PreIncrement => "++",
+            UnaryOperator::PreDecrement => "--",
+            UnaryOperator::Address => "&",
+            UnaryOperator::Indirection => "*",
+            UnaryOperator::Plus => "+",
+            UnaryOperator::Minus => "-",
+            UnaryOperator::Complement => "~",
+            UnaryOperator::Negate => "-",
+            UnaryOperator::SizeOf => "sizeof",
+        }
+        .to_owned()
+    }
+}
+impl WriteString for Integer {
+    fn write_string(&self) -> String {
+        let base = match self.base {
+            IntegerBase::Decimal => "",
+            IntegerBase::Octal => "0o",
+            IntegerBase::Hexadecimal => "0x",
+        }
+        .to_owned();
+        let number = self.number.deref().to_owned();
+        let suffix = self.suffix.write_string();
+        std::format!("{}{}{}", base, number, suffix)
     }
 }
 
-impl WriteLine for FunctionSpecifier {
-    fn write_line(&self, _indent: usize, _write: &mut dyn Write) -> Result<()> {
-        todo!("function specifier");
+impl WriteString for IntegerSuffix {
+    fn write_string(&self) -> String {
+        let mut suffix = String::new();
+        if self.unsigned {
+            suffix += "u";
+        }
+        suffix += match self.size {
+            IntegerSize::Int => "",
+            IntegerSize::Long => "l",
+            IntegerSize::LongLong => "ll",
+        }
+        .to_owned()
+        .deref();
+        suffix
     }
 }
 
-impl WriteLine for StorageClassSpecifier {
-    fn write_line(&self, _indent: usize, _write: &mut dyn Write) -> Result<()> {
-        todo!("storage class specifier");
+impl WriteString for DeclaratorKind {
+    fn write_string(&self) -> String {
+        match self {
+            DeclaratorKind::Abstract => "".to_owned(),
+            DeclaratorKind::Identifier(id) => id.write_string(),
+            DeclaratorKind::Declarator(decl) => decl.write_string(),
+        }
     }
 }
 
-impl WriteLine for TypeQualifier {
-    fn write_line(&self, _indent: usize, _write: &mut dyn Write) -> Result<()> {
-        todo!("type qualifier");
+impl WriteString for DerivedDeclarator {
+    fn write_string(&self) -> String {
+        match self {
+            DerivedDeclarator::Pointer(ptr) => std::format!("*{}", ptr.write_string()),
+            DerivedDeclarator::Array(array) => array.write_string(),
+            DerivedDeclarator::Function(func_decl) => func_decl.write_string(),
+            DerivedDeclarator::KRFunction(func) => std::format!("({})", func.write_string()),
+        }
     }
 }
 
-impl WriteLine for TypeSpecifier {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        write_indent(indent, write)?;
-        let type_str = match self {
-            TypeSpecifier::Void => "void",
-            TypeSpecifier::Char => "char",
-            TypeSpecifier::Short => "short",
-            TypeSpecifier::Int => "int",
-            TypeSpecifier::Long => "long",
-            TypeSpecifier::Float => "float",
-            TypeSpecifier::Double => "double",
-            TypeSpecifier::Signed => "signed",
-            TypeSpecifier::Unsigned => "unsigned",
-            TypeSpecifier::Bool => "bool",
-            TypeSpecifier::Complex => unimplemented!("complex not implement"),
-            TypeSpecifier::Atomic(_) => unimplemented!("atomic not implement"),
-            TypeSpecifier::Struct(_) => "struct",
-            TypeSpecifier::Enum(_) => unimplemented!("atomic not implement"),
-            TypeSpecifier::TypedefName(_) => "typedef",
-            TypeSpecifier::TypeOf(_) => unimplemented!("atomic not implement"),
-            TypeSpecifier::TS18661Float(_) => unimplemented!("atomic not implement"),
-        };
-        write!(write, "{}", type_str)
+impl WriteString for PointerQualifier {
+    fn write_string(&self) -> String {
+        println!("pppppp");
+        "*".to_owned()
+    }
+}
+
+impl WriteString for ArrayDeclarator {
+    fn write_string(&self) -> String {
+        println!("aaaaa");
+        self.qualifiers.write_string() + &self.size.write_string()
+    }
+}
+
+impl WriteString for ArraySize {
+    fn write_string(&self) -> String {
+        match self {
+            ArraySize::Unknown => "[]".to_owned(),
+            ArraySize::VariableUnknown => "[*]".to_owned(),
+            ArraySize::VariableExpression(expr) => std::format!("[{}]", expr.write_string()),
+            ArraySize::StaticExpression(expr) => std::format!("[{}]", expr.write_string()),
+        }
+    }
+}
+
+impl WriteString for FunctionDeclarator {
+    fn write_string(&self) -> String {
+        let parameters = self
+            .parameters
+            .iter()
+            .map(|param| param.write_string())
+            .join(",");
+        std::format!("({})", parameters)
+    }
+}
+
+impl WriteString for ParameterDeclaration {
+    fn write_string(&self) -> String {
+        let specifiers = self
+            .specifiers
+            .iter()
+            .map(|specifier| specifier.write_string())
+            .join(" ");
+        let mut declarator = String::new();
+        if let Some(decl) = &self.declarator {
+            declarator = decl.write_string();
+        }
+        std::format!("{} {}", specifiers, declarator)
+    }
+}
+
+impl WriteString for Ellipsis {
+    fn write_string(&self) -> String {
+        match self {
+            Ellipsis::Some => unimplemented!("ellipse..."),
+            Ellipsis::None => "".to_owned(),
+        }
+    }
+}
+
+impl WriteString for Extension {
+    fn write_string(&self) -> String {
+        unimplemented!("extension")
     }
 }
 
 impl WriteLine for StaticAssert {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        write!(write, "static assert {}\n", indent)
+    fn write_line(&self, _indent: usize, _write: &mut dyn Write) -> Result<()> {
+        unimplemented!("static assert")
     }
 }
 
 impl WriteLine for FunctionDefinition {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        // writeln!(write, "000")?;
-        self.specifiers
+        let specifiers = self
+            .specifiers
             .iter()
-            .for_each(|node| node.node.write_line(indent, write).unwrap());
-        write_space(write)?;
-        self.declarator.write_line(indent, write)?;
-        // writeln!(write, "111")?;
-        self.statement.node.write_line(indent, write)
-        // writeln!(write, "222")
+            .map(|specifier| specifier.write_string())
+            .join(" ");
+        let declarator = self.declarator.write_string();
+        self.declarations.write_line(indent, write)?;
+        write_indent(indent, write)?;
+        write!(write, "{} {}\n", specifiers, declarator)?;
+        self.statement.write_line(indent, write)
     }
 }
 
@@ -527,15 +473,14 @@ impl WriteLine for Statement {
         match self {
             Statement::Labeled(_) => todo!("label sattement"),
             Statement::Compound(block_items) => {
-                write_newline(write)?;
                 write_indent(indent, write)?;
                 write!(write, "{{\n")?;
-                block_items
-                    .iter()
-                    .for_each(|item| item.node.write_line(indent, write).unwrap());
+                block_items.write_line(indent, write)?;
+                // block_items
+                //     .iter()
+                //     .for_each(|item| item.node.write_line(indent, write).unwrap());
                 write_indent(indent, write)?;
-                write!(write, "}}\n")?;
-                Ok(())
+                write!(write, "}}\n")
             }
             Statement::Expression(_) => todo!("expression statement"),
             Statement::If(if_stmt) => if_stmt.node.write_line(indent, write),
@@ -549,10 +494,8 @@ impl WriteLine for Statement {
             Statement::Return(ret_stmt) => {
                 if let Some(expr) = &ret_stmt {
                     write_indent(indent, write)?;
-                    write!(write, "return ")?;
-                    expr.as_ref().node.write_line(indent, write)?;
-                    write_semicolon(write)?;
-                    write_newline(write)?;
+                    let expr = expr.write_string();
+                    write!(write, "return {};\n", expr)?;
                 }
                 Ok(())
             }
@@ -576,32 +519,21 @@ impl WriteLine for BlockItem {
 impl WriteLine for IfStatement {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
         write_indent(indent, write)?;
-        write!(write, "if (")?;
-        self.condition.as_ref().node.write_line(indent, write)?;
-        write!(write, ") ")?;
-        self.then_statement
-            .as_ref()
-            .node
-            .write_line(indent, write)?;
+        let condition = self.condition.write_string();
+        write!(write, "if ({})\n", condition)?;
+        self.then_statement.write_line(indent, write)?;
         if let Some(else_stmt) = &self.else_statement {
-            else_stmt.as_ref().node.write_line(indent, write)?;
+            else_stmt.write_line(indent, write)?;
         };
         Ok(())
     }
 }
 
-impl WriteLine for TranslationUnit {
-    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
-        let Self(tu) = self;
-        tu.iter()
-            .for_each(|node| node.write_line(indent, write).unwrap());
-        Ok(())
-        // todo!("homework 1")
-    }
-}
-
 impl WriteString for Initializer {
     fn write_string(&self) -> String {
-        todo!()
+        match self {
+            Initializer::Expression(expr) => expr.write_string(),
+            Initializer::List(_) => unimplemented!("list initializer"),
+        }
     }
 }
