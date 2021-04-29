@@ -164,7 +164,16 @@ impl WriteString for TypeSpecifier {
 
 impl WriteString for TypeQualifier {
     fn write_string(&self) -> String {
-        unimplemented!("type qualifier")
+        match self {
+            TypeQualifier::Const => "const",
+            TypeQualifier::Restrict => "restrict",
+            TypeQualifier::Volatile => "volatile",
+            TypeQualifier::Nonnull => "_Nonull",
+            TypeQualifier::NullUnspecified => "_Null_unspecified",
+            TypeQualifier::Nullable => "_Nullable",
+            TypeQualifier::Atomic => "_Atomic",
+        }
+        .to_owned()
     }
 }
 
@@ -219,8 +228,8 @@ impl WriteString for Expression {
             // Expression::Member(_) => {}
             Expression::Call(call) => call.write_string(),
             // Expression::CompoundLiteral(_) => {}
-            // Expression::SizeOf(_) => {}
-            // Expression::AlignOf(_) => {}
+            Expression::SizeOf(sizeof) => std::format!("sizeof({})", sizeof.write_string()),
+            Expression::AlignOf(a) => std::format!("_Alignof({})", a.write_string()),
             Expression::UnaryOperator(uop) => uop.write_string(),
             // Expression::Cast(_) => {}
             Expression::BinaryOperator(binop) => binop.write_string(),
@@ -230,6 +239,25 @@ impl WriteString for Expression {
             // Expression::VaArg(_) => {}
             // Expression::Statement(_) => {}
             _ => "".to_owned(),
+        }
+    }
+}
+
+impl WriteString for TypeName {
+    fn write_string(&self) -> String {
+        let specifier = self.specifiers.write_string();
+        if let Some(decl) = &self.declarator {
+            return specifier + &decl.write_string();
+        }
+        specifier
+    }
+}
+
+impl WriteString for SpecifierQualifier {
+    fn write_string(&self) -> String {
+        match self {
+            SpecifierQualifier::TypeSpecifier(spec) => spec.write_string(),
+            SpecifierQualifier::TypeQualifier(q) => q.write_string(),
         }
     }
 }
