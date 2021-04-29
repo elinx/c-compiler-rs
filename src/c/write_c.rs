@@ -107,7 +107,7 @@ impl WriteString for Declaration {
             .declarators
             .iter()
             .map(|decl| decl.write_string())
-            .join(" ");
+            .join(", ");
         specifiers + &" " + &declarators
     }
 }
