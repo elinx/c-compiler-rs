@@ -153,11 +153,65 @@ impl WriteString for TypeSpecifier {
             TypeSpecifier::Bool => "bool".to_owned(),
             TypeSpecifier::Complex => unimplemented!("complex not implement"),
             TypeSpecifier::Atomic(_) => unimplemented!("atomic not implement"),
-            TypeSpecifier::Struct(_) => "struct".to_owned(),
+            TypeSpecifier::Struct(st) => st.write_string(),
             TypeSpecifier::Enum(_) => unimplemented!("atomic not implement"),
-            TypeSpecifier::TypedefName(_) => "typedef".to_owned(),
+            TypeSpecifier::TypedefName(alias) => alias.write_string(),
             TypeSpecifier::TypeOf(_) => unimplemented!("atomic not implement"),
             TypeSpecifier::TS18661Float(_) => unimplemented!("atomic not implement"),
+        }
+    }
+}
+
+impl WriteString for StructType {
+    fn write_string(&self) -> String {
+        let mut ty = self.kind.write_string() + " " + &self.identifier.write_string();
+        if let Some(node) = &self.declarations {
+            let decls = node
+                .iter()
+                .map(|struct_decl| struct_decl.write_string() + ";\n")
+                .join("");
+            ty = std::format!("{} {{\n{}}}", ty, decls);
+        }
+        ty
+    }
+}
+
+impl WriteString for StructKind {
+    fn write_string(&self) -> String {
+        match self {
+            StructKind::Struct => "struct",
+            StructKind::Union => "union",
+        }
+        .to_owned()
+    }
+}
+
+impl WriteString for StructDeclaration {
+    fn write_string(&self) -> String {
+        match self {
+            StructDeclaration::Field(field) => field.write_string(),
+            StructDeclaration::StaticAssert(_) => unimplemented!("static assert struct"),
+        }
+    }
+}
+
+impl WriteString for StructField {
+    fn write_string(&self) -> String {
+        self.specifiers.write_string() + " " + &self.declarators.write_string()
+    }
+}
+
+impl WriteString for StructDeclarator {
+    fn write_string(&self) -> String {
+        if let Some(declarator) = &self.declarator {
+            let declarator = declarator.write_string();
+            if let Some(bit_width) = &self.bit_width {
+                return std::format!("{}:{}", declarator, bit_width.write_string());
+            } else {
+                return std::format!("{}", declarator);
+            };
+        } else {
+            "".to_owned()
         }
     }
 }
@@ -225,21 +279,63 @@ impl WriteString for Expression {
             Expression::Constant(cst) => cst.write_string(),
             // Expression::StringLiteral(_) => {}
             // Expression::GenericSelection(_) => {}
-            // Expression::Member(_) => {}
+            Expression::Member(member) => member.write_string(),
             Expression::Call(call) => call.write_string(),
             // Expression::CompoundLiteral(_) => {}
             Expression::SizeOf(sizeof) => std::format!("sizeof({})", sizeof.write_string()),
             Expression::AlignOf(a) => std::format!("_Alignof({})", a.write_string()),
             Expression::UnaryOperator(uop) => uop.write_string(),
-            // Expression::Cast(_) => {}
+            Expression::Cast(cast) => cast.write_string(),
             Expression::BinaryOperator(binop) => binop.write_string(),
-            // Expression::Conditional(_) => {}
-            // Expression::Comma(_) => {}
+            Expression::Conditional(ternary) => ternary.write_string(),
+            Expression::Comma(comma) => std::format!(
+                "({})",
+                comma.iter().map(|expr| expr.write_string()).join(", ")
+            ),
             // Expression::OffsetOf(_) => {}
             // Expression::VaArg(_) => {}
             // Expression::Statement(_) => {}
             _ => "".to_owned(),
         }
+    }
+}
+
+impl WriteString for MemberExpression {
+    fn write_string(&self) -> String {
+        self.expression.write_string()
+            + &self.operator.write_string()
+            + &self.identifier.write_string()
+    }
+}
+
+impl WriteString for MemberOperator {
+    fn write_string(&self) -> String {
+        match self {
+            MemberOperator::Direct => ".",
+            MemberOperator::Indirect => "->",
+        }
+        .to_owned()
+    }
+}
+
+impl WriteString for CastExpression {
+    fn write_string(&self) -> String {
+        std::format!(
+            "({}) {}",
+            self.type_name.write_string(),
+            self.expression.write_string(),
+        )
+    }
+}
+
+impl WriteString for ConditionalExpression {
+    fn write_string(&self) -> String {
+        std::format!(
+            "(({}) ? ({}) : ({}))",
+            self.condition.write_string(),
+            self.then_expression.write_string(),
+            self.else_expression.write_string()
+        )
     }
 }
 
@@ -272,10 +368,49 @@ impl WriteString for Constant {
     fn write_string(&self) -> String {
         match self {
             Constant::Integer(integer) => integer.write_string(),
-            // Constant::Float(_) => {}
+            Constant::Float(float) => float.write_string(),
             // Constant::Character(_) => {}
             _ => unimplemented!("float, char NYI"),
         }
+    }
+}
+
+impl WriteString for Float {
+    fn write_string(&self) -> String {
+        std::format!(
+            "{}{}{}",
+            self.base.write_string(),
+            self.number.deref(),
+            self.suffix.write_string()
+        )
+    }
+}
+
+impl WriteString for FloatBase {
+    fn write_string(&self) -> String {
+        match self {
+            FloatBase::Decimal => "",
+            FloatBase::Hexadecimal => "0x",
+        }
+        .to_owned()
+    }
+}
+
+impl WriteString for FloatSuffix {
+    fn write_string(&self) -> String {
+        self.format.write_string()
+    }
+}
+
+impl WriteString for FloatFormat {
+    fn write_string(&self) -> String {
+        match self {
+            FloatFormat::Float => "f",
+            FloatFormat::Double => "",
+            FloatFormat::LongDouble => "l",
+            FloatFormat::TS18661Format(_) => unimplemented!("ts..."),
+        }
+        .to_owned()
     }
 }
 
@@ -372,12 +507,13 @@ impl WriteString for UnaryOperator {
             UnaryOperator::Plus => "+",
             UnaryOperator::Minus => "-",
             UnaryOperator::Complement => "~",
-            UnaryOperator::Negate => "-",
+            UnaryOperator::Negate => "!",
             UnaryOperator::SizeOf => "sizeof",
         }
         .to_owned()
     }
 }
+
 impl WriteString for Integer {
     fn write_string(&self) -> String {
         let base = match self.base {
@@ -414,7 +550,7 @@ impl WriteString for DeclaratorKind {
         match self {
             DeclaratorKind::Abstract => "".to_owned(),
             DeclaratorKind::Identifier(id) => id.write_string(),
-            DeclaratorKind::Declarator(decl) => decl.write_string(),
+            DeclaratorKind::Declarator(decl) => std::format!("({})", decl.write_string()),
         }
     }
 }
@@ -519,7 +655,7 @@ impl WriteLine for FunctionDefinition {
 impl WriteLine for Statement {
     fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
         match self {
-            Statement::Labeled(_) => todo!("label sattement"),
+            Statement::Labeled(label) => label.write_line(indent, write),
             Statement::Compound(block_items) => {
                 write_indent(indent, write)?;
                 write!(write, "{{\n")?;
@@ -532,13 +668,19 @@ impl WriteLine for Statement {
                 write!(write, "{};\n", expr.write_string())
             }
             Statement::If(if_stmt) => if_stmt.node.write_line(indent, write),
-            Statement::Switch(_) => todo!("switch statement"),
-            Statement::While(_) => todo!("while statement"),
-            Statement::DoWhile(_) => todo!("do-while statement"),
+            Statement::Switch(sw) => sw.write_line(indent, write),
+            Statement::While(wl) => wl.write_line(indent, write),
+            Statement::DoWhile(dos) => dos.write_line(indent, write),
             Statement::For(for_stmt) => for_stmt.write_line(indent, write),
             Statement::Goto(_) => todo!("goto statement"),
-            Statement::Continue => todo!("continue statement"),
-            Statement::Break => todo!("break statement"),
+            Statement::Continue => {
+                write_indent(indent, write)?;
+                write!(write, "continue;\n")
+            }
+            Statement::Break => {
+                write_indent(indent, write)?;
+                write!(write, "break;\n")
+            }
             Statement::Return(ret_stmt) => {
                 if let Some(expr) = &ret_stmt {
                     write_indent(indent, write)?;
@@ -549,6 +691,50 @@ impl WriteLine for Statement {
             }
             Statement::Asm(_) => todo!("asm statement"),
         }
+    }
+}
+
+impl WriteLine for WhileStatement {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        write_indent(indent, write)?;
+        write!(write, "while ({})\n", self.expression.write_string())?;
+        self.statement.write_line(indent, write)
+    }
+}
+
+impl WriteLine for DoWhileStatement {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        write_indent(indent, write)?;
+        write!(write, "do\n")?;
+        self.statement.write_line(indent, write)?;
+        write_indent(indent, write)?;
+        write!(write, "while ({});\n", self.expression.write_string())
+    }
+}
+
+impl WriteLine for LabeledStatement {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        write_indent(indent, write)?;
+        write!(write, "{}\n", self.label.write_string())?;
+        self.statement.write_line(indent, write)
+    }
+}
+
+impl WriteString for Label {
+    fn write_string(&self) -> String {
+        match self {
+            Label::Identifier(id) => id.write_string() + ": ",
+            Label::Case(cs) => "case ".to_owned() + &cs.write_string() + ":",
+            Label::Default => "default: ".to_owned(),
+        }
+    }
+}
+
+impl WriteLine for SwitchStatement {
+    fn write_line(&self, indent: usize, write: &mut dyn Write) -> Result<()> {
+        write_indent(indent, write)?;
+        write!(write, "switch ({})\n", self.expression.write_string())?;
+        self.statement.write_line(indent, write)
     }
 }
 
@@ -597,6 +783,8 @@ impl WriteLine for IfStatement {
         write!(write, "if ({})\n", condition)?;
         self.then_statement.write_line(indent, write)?;
         if let Some(else_stmt) = &self.else_statement {
+            write_indent(indent, write)?;
+            write!(write, "else\n")?;
             else_stmt.write_line(indent, write)?;
         };
         Ok(())
@@ -607,7 +795,22 @@ impl WriteString for Initializer {
     fn write_string(&self) -> String {
         match self {
             Initializer::Expression(expr) => expr.write_string(),
-            Initializer::List(_) => unimplemented!("list initializer"),
+            Initializer::List(list) => std::format!(
+                "{{{}}}",
+                list.iter().map(|item| item.write_string()).join(", ")
+            ),
         }
+    }
+}
+
+impl WriteString for InitializerListItem {
+    fn write_string(&self) -> String {
+        self.initializer.write_string()
+    }
+}
+
+impl WriteString for Designator {
+    fn write_string(&self) -> String {
+        unimplemented!("designator")
     }
 }
