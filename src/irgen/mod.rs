@@ -1,4 +1,4 @@
-use core::fmt;
+use core::{fmt, panic};
 use std::mem;
 use std::ops::Deref;
 use std::{
@@ -39,6 +39,25 @@ impl BBContext {
     }
 }
 
+#[derive(Debug, PartialEq, Fail)]
+pub enum IrgenErrorMessage {
+    #[fail(display = "{}", message)]
+    Misc { message: String },
+    #[fail(display = "{}", dtype_error)]
+    InvalidDtype { dtype_error: DtypeError },
+}
+
+impl IrgenError {
+    pub fn new(code: String, message: IrgenErrorMessage) -> Self {
+        Self { code, message }
+    }
+}
+
+impl fmt::Display for IrgenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "IrgenError")
+    }
+}
 #[derive(Debug)]
 struct FunctionContext {
     // return_type
@@ -47,7 +66,7 @@ struct FunctionContext {
     bid_counter: usize,
     tempid_counter: usize,
     // typedefs
-    symbol_table: Vec<String>,
+    symbol_table: Vec<HashMap<String, Operand>>,
     curr_block: BBContext,
 }
 
@@ -69,24 +88,64 @@ impl FunctionContext {
         self.bid_counter += 1;
         bid
     }
-}
-#[derive(Debug, PartialEq, Fail)]
-pub enum IrgenErrorMessage {
-    #[fail(display = "{}", message)]
-    Misc { message: String },
-    #[fail(display = "{}", dtype_error)]
-    InvalidDtype { dtype_error: DtypeError },
-}
 
-impl IrgenError {
-    pub fn new(code: String, message: IrgenErrorMessage) -> Self {
-        Self { code, message }
+    #[allow(dead_code)]
+    fn enter_scope(&mut self) {
+        self.symbol_table.push(HashMap::new());
     }
-}
 
-impl fmt::Display for IrgenError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "IrgenError")
+    #[allow(dead_code)]
+    fn exit_scope(&mut self) {
+        self.symbol_table.pop().unwrap();
+    }
+
+    #[allow(dead_code)]
+    fn lookup_symbol_table(&mut self, symbol: String) -> Result<Operand, IrgenError> {
+        self.symbol_table
+            .iter()
+            .rev()
+            .find(|symbol_table| symbol_table.contains_key(&symbol))
+            .ok_or(IrgenError::new(
+                symbol.clone(),
+                IrgenErrorMessage::Misc {
+                    message: "can not find symbol in vector fo symbol table".to_owned(),
+                },
+            ))?
+            .get(&symbol)
+            .ok_or(IrgenError::new(
+                symbol,
+                IrgenErrorMessage::Misc {
+                    message: "can not find symbol hash map".to_owned(),
+                },
+            ))
+            .map(|operand| operand.clone())
+    }
+
+    #[allow(dead_code)]
+    fn insert_symbol_table_entry(
+        &mut self,
+        symbol: String,
+        operand: Operand,
+    ) -> Result<(), IrgenError> {
+        let status = self
+            .symbol_table
+            .last_mut()
+            .ok_or(IrgenError::new(
+                symbol.clone(),
+                IrgenErrorMessage::Misc {
+                    message: "empty symbol talbe".to_owned(),
+                },
+            ))?
+            .insert(symbol.clone(), operand);
+        if status.is_some() {
+            return Err(IrgenError::new(
+                symbol,
+                IrgenErrorMessage::Misc {
+                    message: "duplicated symbol entry in same scope".to_owned(),
+                },
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -180,9 +239,11 @@ impl Irgen {
         match statement {
             Statement::Labeled(_) => {}
             Statement::Compound(block_items) => {
+                func_ctx.enter_scope();
                 for block_item in block_items {
                     self.translate_block_item(&block_item.node, func_ctx)?;
                 }
+                func_ctx.exit_scope();
             }
             Statement::Expression(_) => {}
             Statement::If(_) => {}
@@ -247,17 +308,19 @@ impl Irgen {
         for declarator in &decl.declarators {
             let name = declarator.node.declarator.write_string();
 
-            let allocation = Named::new(Some(name), dtype.clone());
+            let allocation = Named::new(Some(name.clone()), dtype.clone());
             func_ctx.allocations.push(allocation);
             let aid = func_ctx.allocations.len() - 1;
             let rid = RegisterId::Local { aid };
             let ptr = Operand::register(rid, Dtype::pointer(dtype.clone()));
+            func_ctx.insert_symbol_table_entry(name.clone(), ptr.clone())?;
 
             // translate initializer
             if let Some(ref initializer) = declarator.node.initializer {
                 match initializer.node {
                     Initializer::Expression(ref expr) => {
                         let operand = self.translate_expression(&expr.deref().node, func_ctx)?;
+                        let operand = self.translate_typecast(&operand, &dtype, func_ctx)?;
                         let instr = Instruction::Store {
                             ptr,
                             value: operand,
@@ -265,13 +328,50 @@ impl Irgen {
                         func_ctx
                             .curr_block
                             .instructions
-                            .push(Named::new(Some("abc".to_owned()), instr));
+                            .push(Named::new(None, instr));
                     }
                     Initializer::List(_) => unimplemented!("list initializer"),
                 }
             }
         }
         Ok(())
+    }
+
+    // take a look at the following links for better understanding of typecast:
+    //   1. [[Homework 2] Type and typecasting #88](https://github.com/kaist-cp/cs420/issues/88)
+    //   2. [[Homework 2] Tips on arithmetic operators](https://github.com/kaist-cp/cs420/issues/106)
+    fn translate_typecast(
+        &self,
+        operand: &Operand,
+        target_dtype: &Dtype,
+        func_ctx: &mut FunctionContext,
+    ) -> Result<Operand, IrgenError> {
+        // convert to target format, like `u64 0` to `u8 0`
+        // let target_operand = match operand.clone() {
+        //     Operand::Constant(const_val) => const_val.typecast(target_dtype.clone()),
+        //     // Operand::Register { rid, dtype } => {}
+        //     _ => todo!("register typecast"),
+        // };
+        // create a new instruction to do typecast
+        let instr = Instruction::TypeCast {
+            // value: Operand::constant(target_operand),
+            value: operand.clone(),
+            target_dtype: target_dtype.clone(),
+        };
+        func_ctx
+            .curr_block
+            .instructions
+            .push(Named::new(None, instr));
+
+        // return the new register allocated by TypeCast instruction
+        let iid = func_ctx.curr_block.instructions.len() - 1;
+        let bid = func_ctx.curr_block.bid;
+        let rid = RegisterId::Temp { bid, iid };
+        let operand = Operand::Register {
+            rid,
+            dtype: target_dtype.clone(),
+        };
+        Ok(operand)
     }
 
     fn translate_expression(
@@ -324,19 +424,47 @@ impl Irgen {
         let op = unary.operator.node.clone();
         let operand = self.translate_expression(&unary.operand.node, func_ctx)?;
         println!("operand: {:?}", operand);
-        let (rid, dtype) = match operand {
-            Operand::Constant(_) => {
-                return Err(IrgenError::new(
-                    unary.write_string(),
-                    IrgenErrorMessage::Misc {
-                        message: "unary operator on const value is illegal".to_owned(),
-                    },
-                ))
-            }
-            Operand::Register {
-                ref rid, ref dtype, ..
-            } => (rid, dtype.clone()),
+
+        // if the operand get from the tanslated expression is an pointer, we should
+        // load the value from the pointer first.
+        let dtype = operand
+            .get_register()
+            .ok_or(IrgenError::new(
+                unary.write_string(),
+                IrgenErrorMessage::Misc {
+                    message: "unary operator on const value is illegal".to_owned(),
+                },
+            ))?
+            .1
+            .clone();
+
+        let (reg_operand, reg_dtype) = if dtype.get_pointer_inner().is_some() {
+            let instr = Instruction::Load {
+                ptr: operand.clone(),
+            };
+            func_ctx
+                .curr_block
+                .instructions
+                .push(Named::new(None, instr));
+
+            let iid = func_ctx.curr_block.instructions.len() - 1;
+            let bid = func_ctx.curr_block.bid;
+            let rid = RegisterId::Temp { bid, iid };
+            let ptr_dtype = match dtype {
+                Dtype::Pointer { ref inner, .. } => inner.deref(),
+                _ => panic!("should be a pointer"),
+            };
+            (
+                Operand::Register {
+                    rid,
+                    dtype: ptr_dtype.clone(),
+                },
+                ptr_dtype.clone(),
+            )
+        } else {
+            (operand.clone(), dtype.clone())
         };
+
         match op {
             // UnaryOperator::PostIncrement => {}
             // UnaryOperator::PostDecrement => {}
@@ -349,9 +477,9 @@ impl Irgen {
                 });
                 let sub_instr = Instruction::BinOp {
                     op: BinaryOperator::Minus,
-                    lhs: operand,
+                    lhs: reg_operand.clone(),
                     rhs: one,
-                    dtype,
+                    dtype: reg_dtype.clone(),
                 };
                 func_ctx
                     .curr_block
@@ -359,10 +487,16 @@ impl Irgen {
                     .push(Named::new(None, sub_instr));
 
                 let iid = func_ctx.curr_block.instructions.len() - 1;
-                let res_operand = RegisterId::temp(func_ctx.curr_block.bid, iid);
+                let rid = RegisterId::temp(func_ctx.curr_block.bid, iid);
+                let value = Operand::register(rid, reg_dtype.clone());
                 let store_instr = Instruction::Store {
-
-                }
+                    ptr: operand.clone(),
+                    value,
+                };
+                func_ctx
+                    .curr_block
+                    .instructions
+                    .push(Named::new(None, store_instr));
             }
             // UnaryOperator::Address => {}
             // UnaryOperator::Indirection => {}
@@ -373,17 +507,7 @@ impl Irgen {
             // UnaryOperator::SizeOf => {}
             _ => todo!("more unary operators"),
         }
-
-        let store_instr = Instruction::UnaryOp {
-            op,
-            operand: operand.clone(),
-            dtype,
-        };
-        func_ctx
-            .curr_block
-            .instructions
-            .push(Named::new(None, instr));
-        Ok(operand)
+        Ok(reg_operand)
     }
 
     fn translate_binary_operator(
@@ -400,20 +524,31 @@ impl Irgen {
 
     fn translate_identifier(
         &self,
-        _identifier: &Identifier,
+        identifier: &Identifier,
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
-        // TODO: lookup identifier name form symbol table.
-        let aid = func_ctx.allocations.len() - 1;
-        let dtype = &func_ctx.allocations[aid];
-        let rid = RegisterId::Local { aid };
-        let ptr = Operand::register(rid, Dtype::pointer(dtype.deref().clone()));
+        let ptr = func_ctx.lookup_symbol_table(identifier.name.clone())?;
+        // let aid = func_ctx.allocations.len() - 1;
+        // let dtype = &func_ctx.allocations[aid];
+        // let rid = RegisterId::Local { aid };
+        // let ptr = Operand::register(rid, Dtype::pointer(dtype.deref().clone()));
+        // println!("indentifier dtype: {:?}, ptr: {:?}", dtype, ptr);
 
-        let instr = Instruction::Load { ptr: ptr.clone() };
-        func_ctx
-            .curr_block
-            .instructions
-            .push(Named::new(None, instr));
+        println!("indentifier ptr: {:?}", ptr);
+        // let instr = Instruction::Load { ptr: ptr.clone() };
+        // func_ctx
+        //     .curr_block
+        //     .instructions
+        //     .push(Named::new(None, instr));
+
+        // let iid = func_ctx.curr_block.instructions.len() - 1;
+        // let bid = func_ctx.curr_block.bid;
+        // let rid = RegisterId::Temp { bid, iid };
+        // let operand = Operand::Register {
+        //     rid,
+        //     dtype: dtype.deref().clone(),
+        // };
+        // Ok(operand)
 
         Ok(ptr)
     }
