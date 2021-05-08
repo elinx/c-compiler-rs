@@ -75,10 +75,10 @@ impl FunctionContext {
         Self {
             allocations: Vec::new(),
             blocks: BTreeMap::new(),
-            bid_counter: 1,
+            bid_counter: 0,
             tempid_counter: 0,
             symbol_table: Vec::new(),
-            curr_block: BBContext::new(BlockId(1)),
+            curr_block: BBContext::new(BlockId(0)),
         }
     }
 
