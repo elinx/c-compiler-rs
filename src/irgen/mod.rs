@@ -89,17 +89,14 @@ impl FunctionContext {
         bid
     }
 
-    #[allow(dead_code)]
     fn enter_scope(&mut self) {
         self.symbol_table.push(HashMap::new());
     }
 
-    #[allow(dead_code)]
     fn exit_scope(&mut self) {
         self.symbol_table.pop().unwrap();
     }
 
-    #[allow(dead_code)]
     fn lookup_symbol_table(&mut self, symbol: String) -> Result<Operand, IrgenError> {
         self.symbol_table
             .iter()
@@ -121,7 +118,6 @@ impl FunctionContext {
             .map(|operand| operand.clone())
     }
 
-    #[allow(dead_code)]
     fn insert_symbol_table_entry(
         &mut self,
         symbol: String,
