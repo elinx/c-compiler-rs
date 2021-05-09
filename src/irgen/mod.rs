@@ -1,4 +1,5 @@
 use core::{fmt, panic};
+use std::cmp;
 use std::mem;
 use std::ops::Deref;
 use std::{
@@ -9,7 +10,7 @@ use std::{
 use failure::Fail;
 use lang_c::ast::*;
 
-use crate::ir::{BlockExit, BlockId, Dtype, Instruction, Named, Operand, RegisterId};
+use crate::ir::{BlockExit, BlockId, Dtype, HasDtype, Instruction, Named, Operand, RegisterId};
 use crate::*;
 use crate::{ir::DtypeError, ir::FunctionSignature, write_base::WriteString};
 
@@ -60,7 +61,7 @@ impl fmt::Display for IrgenError {
 }
 #[derive(Debug)]
 struct FunctionContext {
-    // return_type
+    return_dtype: Dtype,
     allocations: Vec<Named<Dtype>>,
     blocks: BTreeMap<ir::BlockId, ir::Block>,
     bid_counter: usize,
@@ -71,8 +72,9 @@ struct FunctionContext {
 }
 
 impl FunctionContext {
-    fn new() -> Self {
+    fn new(ret_dtype: Dtype) -> Self {
         Self {
+            return_dtype: ret_dtype,
             allocations: Vec::new(),
             blocks: BTreeMap::new(),
             bid_counter: 0,
@@ -189,23 +191,27 @@ impl Irgen {
         let specifiers = &func.specifiers;
         let declarator = &func.declarator.node;
         let func_name = self.name_of_declarator(declarator);
-        let (dtype, _is_typedef) = ir::Dtype::try_from_ast_declaration_specifiers(specifiers)
+        let (ret_dtype, _is_typedef) = ir::Dtype::try_from_ast_declaration_specifiers(specifiers)
+            .map_err(|e| {
+            IrgenError::new(
+                func.declarator.write_string(),
+                IrgenErrorMessage::InvalidDtype { dtype_error: e },
+            )
+        })?;
+        println!("function dtype: {:#?}", ret_dtype);
+        let dtype = ret_dtype
+            .clone()
+            .with_ast_declarator(declarator)
             .map_err(|e| {
                 IrgenError::new(
                     func.declarator.write_string(),
                     IrgenErrorMessage::InvalidDtype { dtype_error: e },
                 )
             })?;
-        let dtype = dtype.with_ast_declarator(declarator).map_err(|e| {
-            IrgenError::new(
-                func.declarator.write_string(),
-                IrgenErrorMessage::InvalidDtype { dtype_error: e },
-            )
-        })?;
-        println!("dtype: {}", dtype.name().unwrap_or(&"unamed".to_owned()));
+        println!("function dtype: {:#?}", dtype);
 
         let signature = FunctionSignature::new(dtype.deref().clone());
-        let mut func_ctx = FunctionContext::new();
+        let mut func_ctx = FunctionContext::new(ret_dtype);
         self.translate_stmt(&func.statement.node, &mut func_ctx)?;
 
         let definition = Some(ir::FunctionDefinition {
@@ -253,6 +259,8 @@ impl Irgen {
             Statement::Return(return_stmt) => {
                 if let Some(expr) = return_stmt {
                     let value = self.translate_expression(&expr.deref().node, func_ctx)?;
+                    let value =
+                        self.translate_typecast(&value, &func_ctx.return_dtype.clone(), func_ctx)?;
                     let exit = BlockExit::Return { value };
                     let block = ir::Block {
                         phinodes: Vec::new(),
@@ -263,7 +271,7 @@ impl Irgen {
                         exit,
                     };
                     func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
-                    println!("{:#?}", func_ctx);
+                    // println!("{:#?}", func_ctx);
                 }
             }
             Statement::Asm(_) => {}
@@ -342,12 +350,19 @@ impl Irgen {
         target_dtype: &Dtype,
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
+        println!(
+            "==translateing operand: {:?} to dtype: {:?}",
+            operand, target_dtype
+        );
         // convert to target format, like `u64 0` to `u8 0`
-        // let target_operand = match operand.clone() {
-        //     Operand::Constant(const_val) => const_val.typecast(target_dtype.clone()),
-        //     // Operand::Register { rid, dtype } => {}
-        //     _ => todo!("register typecast"),
-        // };
+        match operand {
+            Operand::Constant(const_val) => {
+                if const_val.dtype() == target_dtype.clone() {
+                    return Ok(operand.clone());
+                }
+            }
+            _ => {}
+        };
         // create a new instruction to do typecast
         let instr = Instruction::TypeCast {
             // value: Operand::constant(target_operand),
@@ -487,12 +502,13 @@ impl Irgen {
                 let value = Operand::register(rid, reg_dtype.clone());
                 let store_instr = Instruction::Store {
                     ptr: operand.clone(),
-                    value,
+                    value: value.clone(),
                 };
                 func_ctx
                     .curr_block
                     .instructions
                     .push(Named::new(None, store_instr));
+                return Ok(value.clone());
             }
             // UnaryOperator::Address => {}
             // UnaryOperator::Indirection => {}
@@ -503,7 +519,7 @@ impl Irgen {
             // UnaryOperator::SizeOf => {}
             _ => todo!("more unary operators"),
         }
-        Ok(reg_operand)
+        panic!("something wrong...")
     }
 
     fn translate_binary_operator(
@@ -511,11 +527,147 @@ impl Irgen {
         binary: &BinaryOperatorExpression,
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
-        let _op = binary.operator.node.clone();
-        let _rhs = self.translate_expression(&binary.rhs.node, func_ctx)?;
+        let op = binary.operator.node.clone();
+        let rhs = self.translate_expression(&binary.rhs.node, func_ctx)?;
         let lhs = self.translate_expression(&binary.lhs.node, func_ctx)?;
-        // let instr = Instruction::BinOp { op, lhs, rhs };
-        Ok(lhs)
+        println!("op: {:#?}\n lhs: {:#?}\n rhs: {:#?}\n", op, lhs, rhs);
+        let target_dtype = self.tranlate_merge_type(&lhs, &rhs)?;
+
+        let lhs = self.translate_typecast(&lhs, &target_dtype, func_ctx)?;
+        let rhs = self.translate_typecast(&rhs, &target_dtype, func_ctx)?;
+        let instr_dtype = self.data_width_postprocess(&target_dtype, &op);
+        let instr = Instruction::BinOp {
+            op,
+            lhs,
+            rhs,
+            dtype: instr_dtype.clone(),
+        };
+        func_ctx
+            .curr_block
+            .instructions
+            .push(Named::new(None, instr));
+
+        let iid = func_ctx.curr_block.instructions.len() - 1;
+        let bid = func_ctx.curr_block.bid;
+        let rid = RegisterId::Temp { bid, iid };
+        let operand = Operand::Register {
+            rid,
+            dtype: instr_dtype.clone(),
+        };
+        Ok(operand)
+    }
+
+    fn data_width_postprocess(&self, dtype: &Dtype, op: &BinaryOperator) -> Dtype {
+        if let Dtype::Int { is_const, .. } = dtype {
+            match op {
+                BinaryOperator::Less
+                | BinaryOperator::Greater
+                | BinaryOperator::LessOrEqual
+                | BinaryOperator::GreaterOrEqual
+                | BinaryOperator::Equals
+                | BinaryOperator::NotEquals => {
+                    return Dtype::Int {
+                        width: 1,
+                        is_const: *is_const,
+                        is_signed: false,
+                    }
+                }
+                _ => return dtype.clone(),
+            }
+        }
+        dtype.clone()
+    }
+
+    fn tranlate_merge_type(&self, lhs: &Operand, rhs: &Operand) -> Result<Dtype, IrgenError> {
+        match (lhs, rhs) {
+            (Operand::Constant(_lval), Operand::Constant(_rval)) => todo!("const op const"),
+            (Operand::Constant(constant_val), Operand::Register { dtype, .. }) => {
+                match (constant_val, dtype) {
+                    // (ir::Constant::Undef { dtype }, Dtype::Unit { is_const }) => {}
+                    // (ir::Constant::Undef { dtype }, Dtype::Int { width, is_signed, is_const }) => {}
+                    // (ir::Constant::Undef { dtype }, Dtype::Float { width, is_const }) => {}
+                    // (ir::Constant::Undef { dtype }, Dtype::Pointer { inner, is_const }) => {}
+                    // (ir::Constant::Undef { dtype }, Dtype::Array { inner, size }) => {}
+                    // (ir::Constant::Undef { dtype }, Dtype::Struct { name, fields, is_const, size_align_offsets }) => {}
+                    // (ir::Constant::Undef { dtype }, Dtype::Function { ret, params }) => {}
+                    // (ir::Constant::Undef { dtype }, Dtype::Typedef { name, is_const }) => {}
+                    // (ir::Constant::Unit, Dtype::Unit { is_const }) => {}
+                    // (ir::Constant::Unit, Dtype::Int { width, is_signed, is_const }) => {}
+                    // (ir::Constant::Unit, Dtype::Float { width, is_const }) => {}
+                    // (ir::Constant::Unit, Dtype::Pointer { inner, is_const }) => {}
+                    // (ir::Constant::Unit, Dtype::Array { inner, size }) => {}
+                    // (ir::Constant::Unit, Dtype::Struct { name, fields, is_const, size_align_offsets }) => {}
+                    // (ir::Constant::Unit, Dtype::Function { ret, params }) => {}
+                    // (ir::Constant::Unit, Dtype::Typedef { name, is_const }) => {}
+                    // (ir::Constant::Int { value, width, is_signed }, Dtype::Unit { is_const }) => {}
+                    (
+                        ir::Constant::Int {
+                            width: cwidth,
+                            is_signed: cis_signed,
+                            ..
+                        },
+                        Dtype::Int {
+                            width,
+                            is_signed,
+                            is_const,
+                        },
+                    ) => {
+                        let target_dtype = Dtype::Int {
+                            width: cmp::max(*width, *cwidth),
+                            is_signed: *is_signed || *cis_signed,
+                            is_const: *is_const,
+                        };
+                        return Ok(target_dtype);
+                    } // (ir::Constant::Int { value, width, is_signed }, Dtype::Float { width, is_const }) => {}
+                    // (ir::Constant::Int { value, width, is_signed }, Dtype::Pointer { inner, is_const }) => {}
+                    // (ir::Constant::Int { value, width, is_signed }, Dtype::Array { inner, size }) => {}
+                    // (ir::Constant::Int { value, width, is_signed }, Dtype::Struct { name, fields, is_const, size_align_offsets }) => {}
+                    // (ir::Constant::Int { value, width, is_signed }, Dtype::Function { ret, params }) => {}
+                    // (ir::Constant::Int { value, width, is_signed }, Dtype::Typedef { name, is_const }) => {}
+                    // (ir::Constant::Float { value, width }, Dtype::Unit { is_const }) => {}
+                    // (ir::Constant::Float { value, width }, Dtype::Int { width, is_signed, is_const }) => {}
+                    // (ir::Constant::Float { value, width }, Dtype::Float { width, is_const }) => {}
+                    // (ir::Constant::Float { value, width }, Dtype::Pointer { inner, is_const }) => {}
+                    // (ir::Constant::Float { value, width }, Dtype::Array { inner, size }) => {}
+                    // (ir::Constant::Float { value, width }, Dtype::Struct { name, fields, is_const, size_align_offsets }) => {}
+                    // (ir::Constant::Float { value, width }, Dtype::Function { ret, params }) => {}
+                    // (ir::Constant::Float { value, width }, Dtype::Typedef { name, is_const }) => {}
+                    // (ir::Constant::GlobalVariable { name, dtype }, Dtype::Unit { is_const }) => {}
+                    // (ir::Constant::GlobalVariable { name, dtype }, Dtype::Int { width, is_signed, is_const }) => {}
+                    // (ir::Constant::GlobalVariable { name, dtype }, Dtype::Float { width, is_const }) => {}
+                    // (ir::Constant::GlobalVariable { name, dtype }, Dtype::Pointer { inner, is_const }) => {}
+                    // (ir::Constant::GlobalVariable { name, dtype }, Dtype::Array { inner, size }) => {}
+                    // (ir::Constant::GlobalVariable { name, dtype }, Dtype::Struct { name, fields, is_const, size_align_offsets }) => {}
+                    // (ir::Constant::GlobalVariable { name, dtype }, Dtype::Function { ret, params }) => {}
+                    // (ir::Constant::GlobalVariable { name, dtype }, Dtype::Typedef { name, is_const }) => {}
+                    _ => todo!("constant | register"),
+                }
+            }
+            // (Operand::Constant(constant_val), Operand::Register { dtype, .. }) => {
+            //     let target_constant = constant_val.clone().typecast(dtype.clone());
+            //     let mut target_dtype = dtype.clone();
+            //     if let Dtype::Int {
+            //         ref mut width,
+            //         ref mut is_signed,
+            //         ..
+            //     } = target_dtype
+            //     {
+            //         if let ir::Constant::Int {
+            //             width: cwidth,
+            //             is_signed: cis_signed,
+            //             ..
+            //         } = target_constant
+            //         {
+            //             *width = cwidth;
+            //             *is_signed = cis_signed;
+            //         }
+            //     }
+            //     return Ok(target_dtype);
+            // }
+            (Operand::Register { .. }, Operand::Constant(_)) => todo!("register | constant"),
+            (Operand::Register { .. }, Operand::Register { .. }) => todo!("register | register"),
+        }
+        todo!("merge type")
     }
 
     fn translate_identifier(
