@@ -100,6 +100,10 @@ impl FunctionContext {
     }
 
     fn lookup_symbol_table(&mut self, symbol: String) -> Result<Operand, IrgenError> {
+        println!(
+            "symbol_table: {:?}, symbol: {:?}",
+            &self.symbol_table, &symbol
+        );
         self.symbol_table
             .iter()
             .rev()
@@ -227,6 +231,9 @@ impl Irgen {
             )
         })?;
         println!("function dtype: {:?}", ret_dtype);
+
+        // only return type is fetched from specifiers, try to get more information for
+        // the declarators
         let dtype = ret_dtype
             .clone()
             .with_ast_declarator(declarator)
@@ -238,6 +245,9 @@ impl Irgen {
             })?;
         println!("function dtype: {:?}", dtype);
 
+        // create global symbol table and insert global variables and functions into global symbol,
+        // note that the global and function definitions are added one by one which means only the later
+        // added functions and variables can not be found through looking up the global symbol table.
         let mut global_symbol_table = HashMap::new();
         self.decls.iter().for_each(|(name, decl)| {
             let dtype = decl.dtype();
@@ -246,9 +256,19 @@ impl Irgen {
             global_symbol_table.insert(name.clone(), operand);
             // TODO: check duplications for new symbol
         });
+        global_symbol_table.insert(
+            func_name.clone(),
+            Operand::Constant(ir::Constant::global_variable(
+                func_name.clone(),
+                ret_dtype.clone(),
+            )),
+        );
 
         let signature = FunctionSignature::new(dtype.deref().clone());
         let mut func_ctx = FunctionContext::new(ret_dtype, global_symbol_table);
+
+        let params_name = self.params_name_of_declarator(declarator);
+        self.translate_params(&signature.params, &params_name, &mut func_ctx)?;
         self.translate_stmt(&func.statement.node, &mut func_ctx)?;
 
         let definition = Some(ir::FunctionDefinition {
@@ -266,8 +286,48 @@ impl Irgen {
         Ok(())
     }
 
+    fn translate_params(
+        &self,
+        params: &[Dtype],
+        params_name: &[String],
+        func_ctx: &mut FunctionContext,
+    ) -> Result<(), IrgenError> {
+        params
+            .iter()
+            .zip(params_name.iter())
+            .for_each(|(dtype, name)| {
+                let allocation = Named::new(Some(name.clone()), dtype.clone());
+                func_ctx.allocations.push(allocation);
+                let aid = func_ctx.allocations.len() - 1;
+                let rid = RegisterId::Local { aid };
+                let ptr = Operand::register(rid, Dtype::pointer(dtype.clone()));
+                func_ctx
+                    .insert_symbol_table_entry(name.clone(), ptr.clone())
+                    .unwrap(); // TODO: better way to throw error
+            });
+        Ok(())
+    }
+
     fn name_of_declarator(&self, declarator: &Declarator) -> String {
         declarator.kind.write_string()
+    }
+
+    fn params_name_of_declarator(&self, declarator: &Declarator) -> Vec<String> {
+        for derived_decl in &declarator.derived {
+            match &derived_decl.node {
+                DerivedDeclarator::Function(func_decl) => {
+                    return func_decl
+                        .node
+                        .parameters
+                        .iter()
+                        .map(|p| p.node.declarator.write_string())
+                        .collect::<Vec<_>>();
+                }
+                _ => panic!("can not get params name from declarator"),
+            }
+            // TODO: can I safely return from the loop with lose any information?
+        }
+        Vec::new()
     }
 
     fn translate_stmt(
@@ -442,7 +502,7 @@ impl Irgen {
             Expression::StringLiteral(_) => todo!("string literal"),
             Expression::GenericSelection(_) => todo!("generic selection"),
             Expression::Member(_) => todo!("member"),
-            Expression::Call(_) => todo!("call"),
+            Expression::Call(call) => self.translate_call_expression(&call.deref().node, func_ctx),
             Expression::CompoundLiteral(_) => todo!("compound literal"),
             Expression::SizeOf(_) => todo!("sizeof"),
             Expression::AlignOf(_) => todo!("alignof"),
@@ -459,6 +519,38 @@ impl Irgen {
             Expression::VaArg(_) => todo!("vaarg"),
             Expression::Statement(_) => todo!("stmt"),
         }
+    }
+
+    fn translate_call_expression(
+        &self,
+        call: &CallExpression,
+        func_ctx: &mut FunctionContext,
+    ) -> Result<Operand, IrgenError> {
+        let callee = self.translate_expression(&call.callee.deref().node, func_ctx)?;
+        let mut args = Vec::new();
+        for argument in &call.arguments {
+            let argument = &argument.node;
+            let arg = self.translate_expression(&argument, func_ctx)?;
+            args.push(arg.clone());
+        }
+        let return_type = func_ctx.lookup_symbol_table(call.callee.deref().write_string())?;
+        let instr = Instruction::Call {
+            callee,
+            args,
+            return_type: return_type.dtype(),
+        };
+        func_ctx
+            .curr_block
+            .instructions
+            .push(Named::new(None, instr));
+        let iid = func_ctx.curr_block.instructions.len() - 1;
+        let bid = func_ctx.curr_block.bid;
+        let rid = RegisterId::Temp { bid, iid };
+        let operand = Operand::Register {
+            rid,
+            dtype: return_type.dtype(),
+        };
+        Ok(operand)
     }
 
     fn translate_unary_operator(
