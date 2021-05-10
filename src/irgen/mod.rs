@@ -72,14 +72,14 @@ struct FunctionContext {
 }
 
 impl FunctionContext {
-    fn new(ret_dtype: Dtype) -> Self {
+    fn new(ret_dtype: Dtype, global: HashMap<String, Operand>) -> Self {
         Self {
             return_dtype: ret_dtype,
             allocations: Vec::new(),
             blocks: BTreeMap::new(),
             bid_counter: 0,
             tempid_counter: 0,
-            symbol_table: Vec::new(),
+            symbol_table: vec![global],
             curr_block: BBContext::new(BlockId(0)),
         }
     }
@@ -171,14 +171,42 @@ impl Translate<TranslationUnit> for Irgen {
 
 impl Irgen {
     fn add_declaration(&mut self, decl: &Declaration) -> Result<(), IrgenError> {
-        let (dtype, is_typedef) = ir::Dtype::try_from_ast_declaration_specifiers(&decl.specifiers)
-            .map_err(|e| {
+        let (base_dtype, is_typedef) =
+            ir::Dtype::try_from_ast_declaration_specifiers(&decl.specifiers).map_err(|e| {
                 IrgenError::new(
                     decl.write_string(),
                     IrgenErrorMessage::InvalidDtype { dtype_error: e },
                 )
             })?;
-        println!("Dtype: {}, is_typedef: {}", dtype, is_typedef);
+        println!(
+            "global variable base_dtype: {:?}, is_typedef: {}",
+            base_dtype, is_typedef
+        );
+        for declarator in &decl.declarators {
+            let initializer = declarator.node.initializer.as_ref();
+            let declarator = &declarator.node.declarator.node;
+            let name = self.name_of_declarator(&declarator);
+            let dtype = base_dtype
+                .clone()
+                .with_ast_declarator(&declarator)
+                .map_err(|e| {
+                    IrgenError::new(
+                        declarator.write_string(),
+                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                    )
+                })?
+                .deref()
+                .clone();
+
+            let initializer = if let Some(init) = initializer {
+                Some(init.node.clone())
+            } else {
+                None
+            };
+            self.decls
+                .insert(name, ir::Declaration::Variable { dtype, initializer });
+        }
+        println!("self.decls: {:?}", self.decls);
         // [ ] if `is_typedef` is true, resolve the real type;
         // [ ] create Variable::initializer if ast::Initializer exists
         //    [ ] get array of `declarator`s from decl
@@ -198,7 +226,7 @@ impl Irgen {
                 IrgenErrorMessage::InvalidDtype { dtype_error: e },
             )
         })?;
-        println!("function dtype: {:#?}", ret_dtype);
+        println!("function dtype: {:?}", ret_dtype);
         let dtype = ret_dtype
             .clone()
             .with_ast_declarator(declarator)
@@ -208,10 +236,19 @@ impl Irgen {
                     IrgenErrorMessage::InvalidDtype { dtype_error: e },
                 )
             })?;
-        println!("function dtype: {:#?}", dtype);
+        println!("function dtype: {:?}", dtype);
+
+        let mut global_symbol_table = HashMap::new();
+        self.decls.iter().for_each(|(name, decl)| {
+            let dtype = decl.dtype();
+            let pointer = ir::Constant::global_variable(name.clone(), dtype);
+            let operand = ir::Operand::constant(pointer);
+            global_symbol_table.insert(name.clone(), operand);
+            // TODO: check duplications for new symbol
+        });
 
         let signature = FunctionSignature::new(dtype.deref().clone());
-        let mut func_ctx = FunctionContext::new(ret_dtype);
+        let mut func_ctx = FunctionContext::new(ret_dtype, global_symbol_table);
         self.translate_stmt(&func.statement.node, &mut func_ctx)?;
 
         let definition = Some(ir::FunctionDefinition {
@@ -271,7 +308,7 @@ impl Irgen {
                         exit,
                     };
                     func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
-                    // println!("{:#?}", func_ctx);
+                    // println!("{:?}", func_ctx);
                 }
             }
             Statement::Asm(_) => {}
@@ -351,7 +388,7 @@ impl Irgen {
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
         println!(
-            "==translateing operand: {:?} to dtype: {:?}",
+            "trying to translateing operand from `{:?}` to dtype: `{:?}`",
             operand, target_dtype
         );
         // convert to target format, like `u64 0` to `u8 0`
@@ -530,7 +567,48 @@ impl Irgen {
         let op = binary.operator.node.clone();
         let rhs = self.translate_expression(&binary.rhs.node, func_ctx)?;
         let lhs = self.translate_expression(&binary.lhs.node, func_ctx)?;
-        println!("op: {:#?}\n lhs: {:#?}\n rhs: {:#?}\n", op, lhs, rhs);
+        println!("op: {:?}\n lhs: {:?}\n rhs: {:?}\n", op, lhs, rhs);
+
+        // For assign type, only right side need to be typecasted, while for others the
+        // Dtype need to be deduced.
+        match op {
+            BinaryOperator::Assign
+            | BinaryOperator::AssignMultiply
+            | BinaryOperator::AssignDivide
+            | BinaryOperator::AssignModulo
+            | BinaryOperator::AssignPlus
+            | BinaryOperator::AssignMinus
+            | BinaryOperator::AssignShiftLeft
+            | BinaryOperator::AssignShiftRight
+            | BinaryOperator::AssignBitwiseAnd
+            | BinaryOperator::AssignBitwiseXor
+            | BinaryOperator::AssignBitwiseOr => {
+                println!("assignment rhs 1: {:?}, lhs: {:?}", rhs, lhs);
+                // when the lhs is a global variable, kecc represent it as a Constant::GlobalVariable;
+                // if call dtype() method directly from lhs, the HasDtype transform the Dtype::Int
+                // to Dtype::Pointer which is not what's needed here, so manually fetch Dtype if
+                // lhs is a global variable
+                let target_type = lhs.dtype();
+                let target_type = if let Dtype::Pointer { inner, .. } = target_type {
+                    inner.deref().clone()
+                } else {
+                    target_type
+                };
+                let rhs = self.translate_typecast(&rhs, &target_type, func_ctx)?;
+                let instr = Instruction::Store {
+                    ptr: lhs,
+                    value: rhs.clone(),
+                };
+                func_ctx
+                    .curr_block
+                    .instructions
+                    .push(Named::new(None, instr));
+                println!("assignment rhs: {:?}", &rhs);
+                // for assignment expression, rhs operand is returned
+                return Ok(rhs);
+            }
+            _ => {}
+        }
         let target_dtype = self.tranlate_merge_type(&lhs, &rhs)?;
 
         let lhs = self.translate_typecast(&lhs, &target_dtype, func_ctx)?;
@@ -581,7 +659,8 @@ impl Irgen {
     fn tranlate_merge_type(&self, lhs: &Operand, rhs: &Operand) -> Result<Dtype, IrgenError> {
         match (lhs, rhs) {
             (Operand::Constant(_lval), Operand::Constant(_rval)) => todo!("const op const"),
-            (Operand::Constant(constant_val), Operand::Register { dtype, .. }) => {
+            (Operand::Constant(constant_val), Operand::Register { dtype, .. })
+            | (Operand::Register { dtype, .. }, Operand::Constant(constant_val)) => {
                 match (constant_val, dtype) {
                     // (ir::Constant::Undef { dtype }, Dtype::Unit { is_const }) => {}
                     // (ir::Constant::Undef { dtype }, Dtype::Int { width, is_signed, is_const }) => {}
@@ -664,7 +743,6 @@ impl Irgen {
             //     }
             //     return Ok(target_dtype);
             // }
-            (Operand::Register { .. }, Operand::Constant(_)) => todo!("register | constant"),
             (Operand::Register { .. }, Operand::Register { .. }) => todo!("register | register"),
         }
         todo!("merge type")
