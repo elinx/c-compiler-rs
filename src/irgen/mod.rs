@@ -29,6 +29,7 @@ pub struct IrgenError {
 struct BBContext {
     bid: BlockId,
     instructions: Vec<Named<Instruction>>,
+    phinodes: Vec<Named<Dtype>>,
 }
 
 impl BBContext {
@@ -36,6 +37,7 @@ impl BBContext {
         Self {
             bid,
             instructions: Vec::new(),
+            phinodes: Vec::new(),
         }
     }
 }
@@ -77,7 +79,7 @@ impl FunctionContext {
             return_dtype: ret_dtype,
             allocations: Vec::new(),
             blocks: BTreeMap::new(),
-            bid_counter: 0,
+            bid_counter: 1, // 0 is used by init block by default
             tempid_counter: 0,
             symbol_table: vec![global],
             curr_block: BBContext::new(BlockId(0)),
@@ -300,16 +302,37 @@ impl Irgen {
                 func_ctx.allocations.push(allocation);
                 let aid = func_ctx.allocations.len() - 1;
                 let rid = RegisterId::Local { aid };
-                let ptr = Operand::register(rid, Dtype::pointer(dtype.clone()));
+                let ptr = Operand::register(rid.clone(), Dtype::pointer(dtype.clone()));
                 func_ctx
                     .insert_symbol_table_entry(name.clone(), ptr.clone())
                     .unwrap(); // TODO: better way to throw error
+
+                // initialize allocated memory by store parameter value into it.
+                let phinode = Named::new(Some(name.clone()), dtype.clone());
+                func_ctx.curr_block.phinodes.push(phinode);
+
+                // store value from phinode into stack pointer(not from local register)
+                let rid = RegisterId::Arg {
+                    bid: func_ctx.curr_block.bid,
+                    aid,
+                };
+                let value = Operand::register(rid, dtype.clone());
+                let instr = Instruction::Store { ptr, value };
+                func_ctx
+                    .curr_block
+                    .instructions
+                    .push(Named::new(None, instr));
             });
         Ok(())
     }
 
     fn name_of_declarator(&self, declarator: &Declarator) -> String {
-        declarator.kind.write_string()
+        println!("declarator: {:?}", &declarator);
+        match &declarator.kind.node {
+            DeclaratorKind::Abstract => "".to_owned(),
+            DeclaratorKind::Identifier(id) => id.write_string(),
+            DeclaratorKind::Declarator(decl) => decl.write_string(),
+        }
     }
 
     fn params_name_of_declarator(&self, declarator: &Declarator) -> Vec<String> {
@@ -333,6 +356,31 @@ impl Irgen {
         Vec::new()
     }
 
+    /// Add Exit block to previous basic block, and connect to newly created block `then`
+    /// and `else`
+    fn translate_condition(
+        &self,
+        cond: &Expression,
+        bid_then: BlockId,
+        bid_else: BlockId,
+        func_ctx: &mut FunctionContext,
+    ) -> Result<(), IrgenError> {
+        let condition = self.translate_expression_rvalue(cond, func_ctx)?;
+        let exit = BlockExit::ConditionalJump {
+            condition,
+            arg_then: Box::new(ir::JumpArg::new(bid_then, Vec::new())),
+            arg_else: Box::new(ir::JumpArg::new(bid_else, Vec::new())),
+        };
+        let block = ir::Block {
+            phinodes: std::mem::replace(&mut func_ctx.curr_block.phinodes, Vec::new()),
+            instructions: std::mem::replace(&mut func_ctx.curr_block.instructions, Vec::new()),
+            exit,
+        };
+        func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
+
+        Ok(())
+    }
+
     fn translate_stmt(
         &self,
         statement: &Statement,
@@ -348,7 +396,44 @@ impl Irgen {
                 func_ctx.exit_scope();
             }
             Statement::Expression(_) => {}
-            Statement::If(_) => {}
+            Statement::If(if_stmt) => {
+                let bid_then = func_ctx.alloc_bid();
+                let bid_else = func_ctx.alloc_bid();
+                let bid_end = func_ctx.alloc_bid();
+                self.translate_condition(
+                    &if_stmt.node.condition.node,
+                    bid_then,
+                    bid_else,
+                    func_ctx,
+                )?;
+
+                let then_contex = BBContext::new(bid_then);
+                std::mem::replace(&mut func_ctx.curr_block, then_contex);
+                self.translate_stmt(&if_stmt.node.then_statement.node, func_ctx)?;
+                // Do I need to insert exit block in the end? because then block may contains
+                // a return statement which has added a BlockExit already.
+
+                if let Some(ref else_stmt) = if_stmt.node.else_statement {
+                    self.translate_stmt(&else_stmt.deref().node, func_ctx)?;
+                } else {
+                    // create a block which only contains one jump instruction
+                    let else_contex = BBContext::new(bid_else);
+                    std::mem::replace(&mut func_ctx.curr_block, else_contex);
+                    let jump_arg = ir::JumpArg::new(bid_end, Vec::new());
+                    let block = ir::Block {
+                        phinodes: std::mem::replace(&mut func_ctx.curr_block.phinodes, Vec::new()),
+                        instructions: std::mem::replace(
+                            &mut func_ctx.curr_block.instructions,
+                            Vec::new(),
+                        ),
+                        exit: BlockExit::Jump { arg: jump_arg },
+                    };
+                    func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
+                }
+
+                let end_contex = BBContext::new(bid_end);
+                std::mem::replace(&mut func_ctx.curr_block, end_contex);
+            }
             Statement::Switch(_) => {}
             Statement::While(_) => {}
             Statement::DoWhile(_) => {}
@@ -364,7 +449,7 @@ impl Irgen {
                         self.translate_typecast(&value, &func_ctx.return_dtype.clone(), func_ctx)?;
                     let exit = BlockExit::Return { value };
                     let block = ir::Block {
-                        phinodes: Vec::new(),
+                        phinodes: std::mem::replace(&mut func_ctx.curr_block.phinodes, Vec::new()),
                         instructions: std::mem::replace(
                             &mut func_ctx.curr_block.instructions,
                             Vec::new(),
@@ -953,7 +1038,7 @@ impl Irgen {
         println!("indentifier operand: {:?}", operand);
 
         // kecc represent global function as Constant::GlobalVariable, and when access by
-        // dtype() method, it'll be converted pointer type.
+        // dtype() method, it'll be converted to a pointer.
         if operand
             .get_constant()
             .map_or(ir::Constant::unit(), |c| c.clone())
