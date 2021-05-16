@@ -267,11 +267,16 @@ impl Irgen {
         );
 
         let signature = FunctionSignature::new(dtype.deref().clone());
-        let mut func_ctx = FunctionContext::new(ret_dtype, global_symbol_table);
+        let mut func_ctx = FunctionContext::new(
+            dtype.deref().get_function_inner().unwrap().0.clone(),
+            global_symbol_table,
+        );
 
         let params_name = self.params_name_of_declarator(declarator);
+        func_ctx.enter_scope();
         self.translate_params(&signature.params, &params_name, &mut func_ctx)?;
         self.translate_stmt(&func.statement.node, &mut func_ctx)?;
+        func_ctx.enter_scope();
 
         let definition = Some(ir::FunctionDefinition {
             allocations: func_ctx.allocations,
@@ -343,13 +348,15 @@ impl Irgen {
                         .node
                         .parameters
                         .iter()
-                        .map(|p| p.node.declarator.write_string())
+                        .map(|p| p.node.declarator.as_ref().unwrap().node.kind.write_string())
                         .collect::<Vec<_>>();
                 }
                 DerivedDeclarator::KRFunction(_) => {
                     return Vec::new();
                 }
-                _ => panic!("can not get params name from declarator"),
+
+                DerivedDeclarator::Pointer(_) => {}
+                DerivedDeclarator::Array(_) => {}
             }
             // TODO: can I safely return from the loop with lose any information?
         }
@@ -387,7 +394,7 @@ impl Irgen {
         func_ctx: &mut FunctionContext,
     ) -> Result<(), IrgenError> {
         match statement {
-            Statement::Labeled(_) => {}
+            Statement::Labeled(_) => todo!("labeled"),
             Statement::Compound(block_items) => {
                 func_ctx.enter_scope();
                 for block_item in block_items {
@@ -395,7 +402,10 @@ impl Irgen {
                 }
                 func_ctx.exit_scope();
             }
-            Statement::Expression(_) => {}
+            Statement::Expression(expr) => {
+                println!("expr stmt {}, {:?}", expr.write_string(), expr);
+                todo!("expr sttmt");
+            }
             Statement::If(if_stmt) => {
                 let bid_then = func_ctx.alloc_bid();
                 let bid_else = func_ctx.alloc_bid();
@@ -434,13 +444,13 @@ impl Irgen {
                 let end_contex = BBContext::new(bid_end);
                 std::mem::replace(&mut func_ctx.curr_block, end_contex);
             }
-            Statement::Switch(_) => {}
-            Statement::While(_) => {}
-            Statement::DoWhile(_) => {}
-            Statement::For(_) => {}
-            Statement::Goto(_) => {}
-            Statement::Continue => {}
-            Statement::Break => {}
+            Statement::Switch(_) => todo!("switch"),
+            Statement::While(_) => todo!("while"),
+            Statement::DoWhile(_) => todo!("do-while"),
+            Statement::For(_) => todo!("for"),
+            Statement::Goto(_) => todo!("goto"),
+            Statement::Continue => todo!("continue"),
+            Statement::Break => todo!("break"),
             Statement::Return(return_stmt) => {
                 if let Some(expr) = return_stmt {
                     println!("handing return expression: {:?}", &func_ctx);
@@ -459,7 +469,7 @@ impl Irgen {
                     func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
                 }
             }
-            Statement::Asm(_) => {}
+            Statement::Asm(_) => todo!("asm"),
         }
         Ok(())
     }
@@ -495,7 +505,17 @@ impl Irgen {
             })?;
         println!("Dtype: {}, is_typedef: {}", dtype, is_typedef);
         for declarator in &decl.declarators {
-            let name = declarator.node.declarator.write_string();
+            let name = declarator.node.declarator.node.kind.write_string();
+            let dtype = dtype
+                .clone()
+                .with_ast_declarator(&declarator.node.declarator.node)
+                .map_err(|e| {
+                    IrgenError::new(
+                        declarator.write_string(),
+                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                    )
+                })?;
+            let dtype = dtype.deref();
 
             let allocation = Named::new(Some(name.clone()), dtype.clone());
             func_ctx.allocations.push(allocation);
@@ -711,14 +731,14 @@ impl Irgen {
         // reg:tmp:2 = sub reg:tmp1 const:1
         // store reg:tmp:2 %l0:u8*
         let op = unary.operator.node.clone();
-        let operand = self.translate_expression_rvalue(&unary.operand.node, func_ctx)?;
-        println!("operand: {:?}", operand);
 
         match op {
             // UnaryOperator::PostIncrement => {}
             // UnaryOperator::PostDecrement => {}
             // UnaryOperator::PreIncrement => {}
             UnaryOperator::PreDecrement => {
+                let operand = self.translate_expression_rvalue(&unary.operand.node, func_ctx)?;
+                println!("operand: {:?}", operand);
                 let one = Operand::constant(ir::Constant::Int {
                     value: 1,
                     width: 8,
@@ -748,8 +768,28 @@ impl Irgen {
                     .push(Named::new(None, store_instr));
                 return Ok(value.clone());
             }
-            // UnaryOperator::Address => {}
-            // UnaryOperator::Indirection => {}
+            UnaryOperator::Address => {
+                let operand = self.translate_expression_lvalue(&unary.operand.node, func_ctx)?;
+                println!("operand: {:?}", operand);
+                return Ok(operand.clone());
+                // let addr = Dtype::pointer(operand.dtype());
+                // let iid = func_ctx.curr_block.instructions.len() - 1;
+                // let rid = RegisterId::temp(func_ctx.curr_block.bid, iid);
+                // let value = Operand::register(rid, operand.dtype().clone());
+                // let store_instr = Instruction::Store {
+                //     ptr: self.translate_expression_lvalue(&unary.operand.node, func_ctx)?,
+                //     value: addr,
+                // };
+                // func_ctx
+                //     .curr_block
+                //     .instructions
+                //     .push(Named::new(None, store_instr));
+            }
+            UnaryOperator::Indirection => {
+                let operand = self.translate_expression_rvalue(&unary.operand.node, func_ctx)?;
+                println!("operand: {:?}", operand);
+                return Ok(operand.clone());
+            }
             // UnaryOperator::Plus => {}
             // UnaryOperator::Minus => {}
             // UnaryOperator::Complement => {}
