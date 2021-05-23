@@ -102,9 +102,10 @@ impl FunctionContext {
     }
 
     fn lookup_symbol_table(&mut self, symbol: String) -> Result<Operand, IrgenError> {
-        println!(
+        log::debug!(
             "symbol_table: {:?}, symbol: {:?}",
-            &self.symbol_table, &symbol
+            &self.symbol_table,
+            &symbol
         );
         self.symbol_table
             .iter()
@@ -158,6 +159,7 @@ impl Translate<TranslationUnit> for Irgen {
     type Error = IrgenError;
 
     fn translate(&mut self, unit: &TranslationUnit) -> Result<Self::Target, Self::Error> {
+        env_logger::init();
         for decl in &unit.0 {
             match decl.node {
                 ExternalDeclaration::Declaration(ref var) => self.add_declaration(&var.node)?,
@@ -184,9 +186,10 @@ impl Irgen {
                     IrgenErrorMessage::InvalidDtype { dtype_error: e },
                 )
             })?;
-        println!(
+        log::debug!(
             "global variable base_dtype: {:?}, is_typedef: {}",
-            base_dtype, is_typedef
+            base_dtype,
+            is_typedef
         );
         for declarator in &decl.declarators {
             let initializer = declarator.node.initializer.as_ref();
@@ -212,7 +215,7 @@ impl Irgen {
             self.decls
                 .insert(name, ir::Declaration::Variable { dtype, initializer });
         }
-        println!("self.decls: {:?}", self.decls);
+        log::debug!("self.decls: {:?}", self.decls);
         // [ ] if `is_typedef` is true, resolve the real type;
         // [ ] create Variable::initializer if ast::Initializer exists
         //    [ ] get array of `declarator`s from decl
@@ -232,7 +235,7 @@ impl Irgen {
                 IrgenErrorMessage::InvalidDtype { dtype_error: e },
             )
         })?;
-        println!("function dtype: {:?}", ret_dtype);
+        log::debug!("function dtype: {:?}", ret_dtype);
 
         // only return type is fetched from specifiers, try to get more information for
         // the declarators
@@ -245,7 +248,7 @@ impl Irgen {
                     IrgenErrorMessage::InvalidDtype { dtype_error: e },
                 )
             })?;
-        println!("function dtype: {:?}", dtype);
+        log::debug!("function dtype: {:?}", dtype);
 
         // create global symbol table and insert global variables and functions into global symbol,
         // note that the global and function definitions are added linearly which means only the former
@@ -332,7 +335,7 @@ impl Irgen {
     }
 
     fn name_of_declarator(&self, declarator: &Declarator) -> String {
-        println!("declarator: {:?}", &declarator);
+        log::debug!("declarator: {:?}", &declarator);
         match &declarator.kind.node {
             DeclaratorKind::Abstract => "".to_owned(),
             DeclaratorKind::Identifier(id) => id.write_string(),
@@ -403,8 +406,10 @@ impl Irgen {
                 func_ctx.exit_scope();
             }
             Statement::Expression(expr) => {
-                println!("expr stmt {}, {:?}", expr.write_string(), expr);
-                todo!("expr sttmt");
+                log::debug!("expr stmt {}, {:?}", expr.write_string(), expr);
+                if let Some(expression) = expr {
+                    self.translate_expression_rvalue(&expression.deref().node, func_ctx)?;
+                }
             }
             Statement::If(if_stmt) => {
                 let bid_then = func_ctx.alloc_bid();
@@ -453,7 +458,7 @@ impl Irgen {
             Statement::Break => todo!("break"),
             Statement::Return(return_stmt) => {
                 if let Some(expr) = return_stmt {
-                    println!("handing return expression: {:?}", &func_ctx);
+                    log::debug!("handing return expression: {:?}", &func_ctx);
                     let value = self.translate_expression_rvalue(&expr.deref().node, func_ctx)?;
                     let value =
                         self.translate_typecast(&value, &func_ctx.return_dtype.clone(), func_ctx)?;
@@ -503,7 +508,7 @@ impl Irgen {
                     IrgenErrorMessage::InvalidDtype { dtype_error: e },
                 )
             })?;
-        println!("Dtype: {}, is_typedef: {}", dtype, is_typedef);
+        log::debug!("Dtype: {}, is_typedef: {}", dtype, is_typedef);
         for declarator in &decl.declarators {
             let name = declarator.node.declarator.node.kind.write_string();
             let dtype = dtype
@@ -556,13 +561,14 @@ impl Irgen {
         target_dtype: &Dtype,
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
-        println!(
+        log::debug!(
             "trying to translateing operand from `{:?}` to dtype: `{:?}`",
-            operand, target_dtype
+            operand,
+            target_dtype
         );
         // convert to target format, like `u64 0` to `u8 0`
         if operand.dtype() == target_dtype.clone() {
-            println!("typecast skip");
+            log::debug!("typecast skip");
             return Ok(operand.clone());
         }
 
@@ -575,7 +581,7 @@ impl Irgen {
                     _ => const_val.dtype().clone(),
                 };
                 if dtype == target_dtype.clone() {
-                    println!("typecast skip");
+                    log::debug!("typecast skip");
                     return Ok(operand.clone());
                 }
             }
@@ -600,7 +606,7 @@ impl Irgen {
             rid,
             dtype: target_dtype.clone(),
         };
-        println!("typecast ok");
+        log::debug!("typecast ok");
         Ok(operand)
     }
 
@@ -631,7 +637,18 @@ impl Irgen {
             Expression::SizeOf(_) => todo!("sizeof"),
             Expression::AlignOf(_) => todo!("alignof"),
             Expression::UnaryOperator(unary) => {
-                self.translate_unary_operator(&unary.deref().node, func_ctx)
+                match &unary.node.operator.node {
+                    UnaryOperator::Indirection => {
+                        self.translate_expression_rvalue(&unary.node.operand.node, func_ctx)
+                    }
+                    _ => Err(IrgenError::new(
+                        expression.write_string(),
+                        IrgenErrorMessage::Misc {
+                            message: "only *ptr could be served as lvalue".to_owned(),
+                        },
+                    )),
+                }
+                // self.translate_unary_operator(&unary.deref().node, func_ctx)
             }
             Expression::Cast(_) => todo!("cast"),
             Expression::BinaryOperator(bop) => {
@@ -697,7 +714,27 @@ impl Irgen {
             args.push(arg.clone());
         }
         let return_type = func_ctx.lookup_symbol_table(call.callee.deref().write_string())?;
-        println!("call expression return type: {:?}", return_type);
+        // log::debug!("call expression function type: {:?}", function_type);
+        // let return_type = function_type
+        //     .dtype()
+        //     .get_pointer_inner()
+        //     .ok_or(IrgenError::new(
+        //         call.write_string(),
+        //         IrgenErrorMessage::Misc {
+        //             message: "invlaid function type".to_owned(),
+        //         },
+        //     ))?
+        //     .get_function_inner()
+        //     .ok_or(IrgenError::new(
+        //         call.write_string(),
+        //         IrgenErrorMessage::Misc {
+        //             message: "invlaid function type".to_owned(),
+        //         },
+        //     ))?
+        //     .0
+        //     .clone();
+
+        log::debug!("call expression return type: {:?}", return_type);
         let return_type = return_type
             .get_constant()
             .map_or(ir::Constant::unit(), |c| c.clone())
@@ -738,7 +775,7 @@ impl Irgen {
             // UnaryOperator::PreIncrement => {}
             UnaryOperator::PreDecrement => {
                 let operand = self.translate_expression_rvalue(&unary.operand.node, func_ctx)?;
-                println!("operand: {:?}", operand);
+                log::debug!("operand: {:?}", operand);
                 let one = Operand::constant(ir::Constant::Int {
                     value: 1,
                     width: 8,
@@ -769,25 +806,87 @@ impl Irgen {
                 return Ok(value.clone());
             }
             UnaryOperator::Address => {
+                // short circut `&*ptr` form to `ptr` according to C standard.
+                match &unary.operand.node {
+                    Expression::UnaryOperator(sub_unary) => {
+                        let sub_expr = &sub_unary.node;
+                        match &sub_expr.operator.node {
+                            UnaryOperator::Indirection => {
+                                return self
+                                    .translate_expression_rvalue(&sub_expr.operand.node, func_ctx);
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                };
+                log::debug!("unary expr: {}", &unary.write_string());
+                // Should not take address from a rvalue, but the standard solution looks take
+                // the expression as a rvalue-expression and an extra `load` instruction generated.
                 let operand = self.translate_expression_lvalue(&unary.operand.node, func_ctx)?;
-                println!("operand: {:?}", operand);
-                return Ok(operand.clone());
-                // let addr = Dtype::pointer(operand.dtype());
-                // let iid = func_ctx.curr_block.instructions.len() - 1;
-                // let rid = RegisterId::temp(func_ctx.curr_block.bid, iid);
-                // let value = Operand::register(rid, operand.dtype().clone());
-                // let store_instr = Instruction::Store {
-                //     ptr: self.translate_expression_lvalue(&unary.operand.node, func_ctx)?,
-                //     value: addr,
-                // };
-                // func_ctx
-                //     .curr_block
-                //     .instructions
-                //     .push(Named::new(None, store_instr));
+                log::debug!("address operand: {:?}", operand);
+                return Ok(match &operand {
+                    Operand::Constant(cst) => match cst {
+                        ir::Constant::Undef { .. }
+                        | ir::Constant::Unit { .. }
+                        | ir::Constant::Int { .. }
+                        | ir::Constant::Float { .. } => panic!("invalid lvalue: {}", cst),
+                        ir::Constant::GlobalVariable { .. } => operand.clone(),
+                    },
+                    Operand::Register { rid, dtype } => match rid {
+                        RegisterId::Local { .. } => operand.clone(),
+                        RegisterId::Arg { .. } => operand.clone(),
+                        RegisterId::Temp { .. } => {
+                            // return a tempory register which contains a pointer dtype
+                            if dtype.get_pointer_inner().is_some() {
+                                operand.clone()
+                            } else {
+                                panic!("cannot take address from a local register")
+                            }
+                        }
+                    },
+                });
             }
             UnaryOperator::Indirection => {
+                // short circut `*&ptr` form to `ptr` according to C standard.
+                match &unary.operand.node {
+                    Expression::UnaryOperator(sub_unary) => {
+                        let sub_expr = &sub_unary.node;
+                        match &sub_expr.operator.node {
+                            UnaryOperator::Address => {
+                                return self
+                                    .translate_expression_rvalue(&sub_expr.operand.node, func_ctx);
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                };
+
+                log::debug!(
+                    "indirection processing {}",
+                    &unary.operand.node.write_string()
+                );
                 let operand = self.translate_expression_rvalue(&unary.operand.node, func_ctx)?;
-                println!("operand: {:?}", operand);
+                log::debug!("indirection operand: {:?}", operand);
+
+                let instr = Instruction::Load {
+                    ptr: operand.clone(),
+                };
+                func_ctx
+                    .curr_block
+                    .instructions
+                    .push(Named::new(None, instr));
+
+                let iid = func_ctx.curr_block.instructions.len() - 1;
+                let bid = func_ctx.curr_block.bid;
+                let rid = RegisterId::Temp { bid, iid };
+                // the operand type is not pointer type, need to fetch the inner type
+                // unwrap is safe here for pre-confirmation.
+                let operand = Operand::Register {
+                    rid,
+                    dtype: operand.dtype().get_pointer_inner().unwrap().clone(),
+                };
                 return Ok(operand.clone());
             }
             // UnaryOperator::Plus => {}
@@ -813,7 +912,6 @@ impl Irgen {
             BinaryOperator::Assign
             | BinaryOperator::AssignDivide
             | BinaryOperator::AssignModulo
-            | BinaryOperator::AssignPlus
             | BinaryOperator::AssignMinus
             | BinaryOperator::AssignShiftLeft
             | BinaryOperator::AssignShiftRight
@@ -822,8 +920,8 @@ impl Irgen {
             | BinaryOperator::AssignBitwiseOr => {
                 let lhs = self.translate_expression_lvalue(&binary.lhs.node, func_ctx)?;
                 let rhs = self.translate_expression_rvalue(&binary.rhs.node, func_ctx)?;
-                println!("op: {:?}\n lhs: {:?}\n rhs: {:?}\n", op, lhs, rhs);
-                println!("assignment rhs 1: {:?}, lhs: {:?}", rhs, lhs);
+                log::debug!("op: {:?}\n lhs: {:?}\n rhs: {:?}\n", op, lhs, rhs);
+                log::debug!("assignment rhs 1: {:?}, lhs: {:?}", rhs, lhs);
                 // when the lhs is a global variable, kecc represent it as a Constant::GlobalVariable;
                 // if call dtype() method directly from lhs, the HasDtype transform the Dtype::Int
                 // to Dtype::Pointer which is not what's needed here, so manually fetch Dtype if
@@ -843,7 +941,57 @@ impl Irgen {
                     .curr_block
                     .instructions
                     .push(Named::new(None, instr));
-                println!("assignment rhs: {:?}", &rhs);
+                log::debug!("assignment rhs: {:?}", &rhs);
+                // for assignment expression, rhs operand is returned
+                return Ok(rhs);
+            }
+            BinaryOperator::AssignPlus => {
+                let lhs = self.translate_expression_lvalue(&binary.lhs.node, func_ctx)?;
+                let rhs = self.translate_expression_rvalue(&binary.rhs.node, func_ctx)?;
+                log::debug!("op: {:?}\n lhs: {:?}\n rhs: {:?}\n", op, lhs, rhs);
+                log::debug!("assignment rhs 1: {:?}, lhs: {:?}", rhs, lhs);
+                if lhs.dtype().get_pointer_inner().is_none() {
+                    panic!(
+                        "lhs value of assignment expression is not a pointer: {}",
+                        lhs
+                    );
+                }
+                // when the lhs is a global variable, kecc represent it as a Constant::GlobalVariable;
+                // if call dtype() method directly from lhs, the HasDtype transform the Dtype::Int
+                // to Dtype::Pointer which is not what's needed here, so manually fetch Dtype if
+                // lhs is a global variable
+                let target_type = lhs.dtype();
+                let target_type = if let Dtype::Pointer { inner, .. } = target_type {
+                    inner.deref().clone()
+                } else {
+                    target_type
+                };
+                let rhs = self.translate_typecast(&rhs, &target_type, func_ctx)?;
+
+                let add_instr = Instruction::BinOp {
+                    op: BinaryOperator::Plus,
+                    lhs: lhs.clone(),
+                    rhs: rhs.clone(),
+                    dtype: target_type.clone(),
+                };
+                func_ctx
+                    .curr_block
+                    .instructions
+                    .push(Named::new(None, add_instr));
+                let iid = func_ctx.curr_block.instructions.len() - 1;
+                let bid = func_ctx.curr_block.bid;
+                let rid = RegisterId::Temp { bid, iid };
+                let value = Operand::Register {
+                    rid,
+                    dtype: target_type.clone(),
+                };
+
+                let instr = Instruction::Store { ptr: lhs, value };
+                func_ctx
+                    .curr_block
+                    .instructions
+                    .push(Named::new(None, instr));
+                // log::debug!("assignment rhs: {:?}", &rhs);
                 // for assignment expression, rhs operand is returned
                 return Ok(rhs);
             }
@@ -851,10 +999,10 @@ impl Irgen {
         }
         let lhs = self.translate_expression_rvalue(&binary.lhs.node, func_ctx)?;
         let rhs = self.translate_expression_rvalue(&binary.rhs.node, func_ctx)?;
-        println!("op: {:?}\n lhs: {:?}\n rhs: {:?}\n", op, lhs, rhs);
+        log::debug!("op: {:?}\n lhs: {:?}\n rhs: {:?}\n", op, lhs, rhs);
 
         let target_dtype = self.translate_merge_type(&lhs.dtype(), &rhs.dtype())?;
-        println!("merged dtype: {:?}", target_dtype);
+        log::debug!("merged dtype: {:?}", target_dtype);
 
         let lhs = self.translate_typecast(&lhs, &target_dtype, func_ctx)?;
         let rhs = self.translate_typecast(&rhs, &target_dtype, func_ctx)?;
@@ -1075,7 +1223,7 @@ impl Irgen {
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
         let operand = func_ctx.lookup_symbol_table(identifier.name.clone())?;
-        println!("indentifier operand: {:?}", operand);
+        log::debug!("indentifier operand: {:?}", operand);
 
         // kecc represent global function as Constant::GlobalVariable, and when access by
         // dtype() method, it'll be converted to a pointer.
