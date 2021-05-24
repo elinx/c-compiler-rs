@@ -809,7 +809,38 @@ impl Irgen {
         let op = unary.operator.node.clone();
 
         match op {
-            // UnaryOperator::PostIncrement => {}
+            UnaryOperator::PostIncrement => {
+                let operand = self.translate_expression_rvalue(&unary.operand.node, func_ctx)?;
+                log::debug!("operand: {:?}", operand);
+                let one = Operand::constant(ir::Constant::Int {
+                    value: 1,
+                    width: operand.dtype().get_int_width().unwrap(),
+                    is_signed: true,
+                });
+                let sub_instr = Instruction::BinOp {
+                    op: BinaryOperator::Plus,
+                    lhs: operand.clone(),
+                    rhs: one,
+                    dtype: operand.dtype().clone(),
+                };
+                func_ctx
+                    .curr_block
+                    .instructions
+                    .push(Named::new(None, sub_instr));
+
+                let iid = func_ctx.curr_block.instructions.len() - 1;
+                let rid = RegisterId::temp(func_ctx.curr_block.bid, iid);
+                let value = Operand::register(rid, operand.dtype().clone());
+                let store_instr = Instruction::Store {
+                    ptr: self.translate_expression_lvalue(&unary.operand.node, func_ctx)?,
+                    value: value.clone(),
+                };
+                func_ctx
+                    .curr_block
+                    .instructions
+                    .push(Named::new(None, store_instr));
+                return Ok(value.clone());
+            }
             // UnaryOperator::PostDecrement => {}
             // UnaryOperator::PreIncrement => {}
             UnaryOperator::PreDecrement => {
