@@ -159,7 +159,7 @@ impl Translate<TranslationUnit> for Irgen {
     type Error = IrgenError;
 
     fn translate(&mut self, unit: &TranslationUnit) -> Result<Self::Target, Self::Error> {
-        env_logger::init();
+        // env_logger::init();
         for decl in &unit.0 {
             match decl.node {
                 ExternalDeclaration::Declaration(ref var) => self.add_declaration(&var.node)?,
@@ -280,6 +280,30 @@ impl Irgen {
         self.translate_params(&signature.params, &params_name, &mut func_ctx)?;
         self.translate_stmt(&func.statement.node, &mut func_ctx)?;
         func_ctx.enter_scope();
+
+        // add an extra block for `main` function served as default return value
+        let value = if ret_dtype == ir::Dtype::unit() {
+            ir::Operand::constant(ir::Constant::unit())
+        } else if ret_dtype == Dtype::INT {
+            if func_name == "main" {
+                ir::Operand::constant(ir::Constant::int(0 as u128, Dtype::INT))
+            } else {
+                ir::Operand::constant(ir::Constant::undef(ret_dtype))
+            }
+        } else {
+            ir::Operand::constant(ir::Constant::undef(ret_dtype))
+        };
+        let block = ir::Block {
+            phinodes: Vec::new(),
+            instructions: Vec::new(),
+            exit: BlockExit::Return { value },
+        };
+        let bid = if func_ctx.blocks.is_empty() {
+            func_ctx.curr_block.bid
+        } else {
+            func_ctx.alloc_bid()
+        };
+        func_ctx.blocks.insert(bid, block);
 
         let definition = Some(ir::FunctionDefinition {
             allocations: func_ctx.allocations,
@@ -632,7 +656,7 @@ impl Irgen {
             Expression::StringLiteral(_) => todo!("string literal"),
             Expression::GenericSelection(_) => todo!("generic selection"),
             Expression::Member(_) => todo!("member"),
-            Expression::Call(call) => self.translate_call_expression(&call.deref().node, func_ctx),
+            Expression::Call(_) => todo!("call expr as lvalue"),
             Expression::CompoundLiteral(_) => todo!("compound literal"),
             Expression::SizeOf(_) => todo!("sizeof"),
             Expression::AlignOf(_) => todo!("alignof"),
@@ -651,9 +675,7 @@ impl Irgen {
                 // self.translate_unary_operator(&unary.deref().node, func_ctx)
             }
             Expression::Cast(_) => todo!("cast"),
-            Expression::BinaryOperator(bop) => {
-                self.translate_binary_operator(&bop.deref().node, func_ctx)
-            }
+            Expression::BinaryOperator(_) => todo!("bin expr"),
             Expression::Conditional(_) => todo!("conditional"),
             Expression::Comma(_) => todo!("comma"),
             Expression::OffsetOf(_) => todo!("offsetof"),
@@ -684,7 +706,24 @@ impl Irgen {
             Expression::Member(_) => todo!("member"),
             Expression::Call(call) => self.translate_call_expression(&call.deref().node, func_ctx),
             Expression::CompoundLiteral(_) => todo!("compound literal"),
-            Expression::SizeOf(_) => todo!("sizeof"),
+            Expression::SizeOf(expr) => {
+                let dtype = Dtype::try_from(&expr.node).map_err(|e| {
+                    IrgenError::new(
+                        expr.write_string(),
+                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                    )
+                })?;
+                let (size_of, _) = dtype.size_align_of(&HashMap::new()).map_err(|e| {
+                    IrgenError::new(
+                        expr.write_string(),
+                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                    )
+                })?;
+                Ok(ir::Operand::constant(ir::Constant::int(
+                    size_of as u128,
+                    ir::Dtype::LONG,
+                )))
+            }
             Expression::AlignOf(_) => todo!("alignof"),
             Expression::UnaryOperator(unary) => {
                 self.translate_unary_operator(&unary.deref().node, func_ctx)
@@ -956,21 +995,34 @@ impl Irgen {
                         lhs
                     );
                 }
+                let load_instr = Instruction::Load { ptr: lhs.clone() };
+                func_ctx
+                    .curr_block
+                    .instructions
+                    .push(Named::new(None, load_instr));
+                let iid = func_ctx.curr_block.instructions.len() - 1;
+                let bid = func_ctx.curr_block.bid;
+                let rid = RegisterId::Temp { bid, iid };
+                let lhs_value = Operand::Register {
+                    rid,
+                    dtype: lhs.clone().dtype().get_pointer_inner().unwrap().clone(),
+                };
                 // when the lhs is a global variable, kecc represent it as a Constant::GlobalVariable;
                 // if call dtype() method directly from lhs, the HasDtype transform the Dtype::Int
                 // to Dtype::Pointer which is not what's needed here, so manually fetch Dtype if
                 // lhs is a global variable
-                let target_type = lhs.dtype();
-                let target_type = if let Dtype::Pointer { inner, .. } = target_type {
-                    inner.deref().clone()
-                } else {
-                    target_type
-                };
+                // let target_type = lhs.dtype();
+                // let target_type = if let Dtype::Pointer { inner, .. } = target_type {
+                //     inner.deref().clone()
+                // } else {
+                //     target_type
+                // };
+                let target_type = lhs_value.dtype().clone();
                 let rhs = self.translate_typecast(&rhs, &target_type, func_ctx)?;
 
                 let add_instr = Instruction::BinOp {
                     op: BinaryOperator::Plus,
-                    lhs: lhs.clone(),
+                    lhs: lhs_value,
                     rhs: rhs.clone(),
                     dtype: target_type.clone(),
                 };
