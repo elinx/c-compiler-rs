@@ -435,15 +435,19 @@ impl Irgen {
         condition: &Operand,
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
-        self.insert_instruction(
-            ir::Instruction::BinOp {
-                op: BinaryOperator::Equals,
-                lhs: condition.clone(),
-                rhs: Operand::Constant(ir::Constant::int(0 as u128, Dtype::BOOL)),
-                dtype: Dtype::BOOL,
-            },
-            func_ctx,
-        )
+        if condition.dtype() != Dtype::BOOL {
+            self.insert_instruction(
+                ir::Instruction::BinOp {
+                    op: BinaryOperator::NotEquals,
+                    lhs: condition.clone(),
+                    rhs: Operand::Constant(ir::Constant::int(0 as u128, condition.dtype().clone())),
+                    dtype: Dtype::BOOL,
+                },
+                func_ctx,
+            )
+        } else {
+            Ok(condition.clone())
+        }
     }
 
     /// Add Exit block to previous basic block, and connect to newly created block `then`
@@ -469,6 +473,22 @@ impl Irgen {
         };
         func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
 
+        Ok(())
+    }
+
+    fn insert_jump_block(
+        &self,
+        bid_end: BlockId,
+        func_ctx: &mut FunctionContext,
+    ) -> Result<(), IrgenError> {
+        let block = ir::Block {
+            phinodes: std::mem::replace(&mut func_ctx.curr_block.phinodes, Vec::new()),
+            instructions: std::mem::replace(&mut func_ctx.curr_block.instructions, Vec::new()),
+            exit: BlockExit::Jump {
+                arg: ir::JumpArg::new(bid_end, Vec::new()),
+            },
+        };
+        func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
         Ok(())
     }
 
@@ -508,6 +528,7 @@ impl Irgen {
                 self.translate_stmt(&if_stmt.node.then_statement.node, func_ctx)?;
                 // Do I need to insert exit block in the end? because then block may contains
                 // a return statement which has added a BlockExit already.
+                self.insert_jump_block(bid_end, func_ctx)?;
 
                 if let Some(ref else_stmt) = if_stmt.node.else_statement {
                     self.translate_stmt(&else_stmt.deref().node, func_ctx)?;
@@ -1179,22 +1200,38 @@ impl Irgen {
 
                 // lhs condition block, false block
                 let lhs_true_bid = func_ctx.alloc_bid();
+                let lhs_true_context = BBContext::new(lhs_true_bid);
                 let lhs_false_bid = func_ctx.alloc_bid();
-                let rhs_bid = func_ctx.alloc_bid();
-                let rhs_context = BBContext::new(rhs_bid);
-                let rhs_true_bid = func_ctx.alloc_bid();
-                let rhs_false_bid = func_ctx.alloc_bid();
-
                 let exit_bid = func_ctx.alloc_bid();
                 let exit_context = BBContext::new(exit_bid);
 
                 self.translate_condition(lhs, lhs_true_bid, lhs_false_bid, func_ctx)?;
                 self.create_bool_block(lhs_false_bid, exit_bid, &res, false, func_ctx);
-                self.create_bool_block(lhs_true_bid, rhs_bid, &res, false, func_ctx);
-                std::mem::replace(&mut func_ctx.curr_block, rhs_context);
-                self.translate_condition(rhs, rhs_true_bid, rhs_false_bid, func_ctx)?;
-                self.create_bool_block(rhs_false_bid, exit_bid, &res, false, func_ctx);
-                self.create_bool_block(rhs_true_bid, exit_bid, &res, true, func_ctx);
+                std::mem::replace(&mut func_ctx.curr_block, lhs_true_context);
+                let condition = self.translate_expression_rvalue(rhs, func_ctx)?;
+                let condition = self.translate_typecast_to_bool(&condition, func_ctx)?;
+                self.insert_instruction(
+                    ir::Instruction::Store {
+                        ptr: res.clone(),
+                        value: condition,
+                    },
+                    func_ctx,
+                )?;
+                let block = ir::Block {
+                    phinodes: Vec::new(),
+                    instructions: std::mem::replace(
+                        &mut func_ctx.curr_block.instructions,
+                        Vec::new(),
+                    ),
+                    exit: ir::BlockExit::Jump {
+                        arg: JumpArg::new(exit_bid, Vec::new()),
+                    },
+                };
+                func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
+                std::mem::replace(&mut func_ctx.curr_block, exit_context);
+                return Ok(
+                    self.insert_instruction(ir::Instruction::Load { ptr: res.clone() }, func_ctx)?
+                );
                 std::mem::replace(&mut func_ctx.curr_block, exit_context);
                 return Ok(res);
             }
@@ -1207,9 +1244,9 @@ impl Irgen {
                 // lhs condition block, false block
                 let lhs_true_bid = func_ctx.alloc_bid();
                 let lhs_false_bid = func_ctx.alloc_bid();
+                let lhs_false_context = BBContext::new(lhs_false_bid);
                 let exit_bid = func_ctx.alloc_bid();
                 let exit_context = BBContext::new(exit_bid);
-                let lhs_false_context = BBContext::new(lhs_false_bid);
 
                 self.translate_condition(lhs, lhs_true_bid, lhs_false_bid, func_ctx)?;
                 self.create_bool_block(lhs_true_bid, exit_bid, &res, true, func_ctx);
