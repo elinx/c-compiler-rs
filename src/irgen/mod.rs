@@ -1192,7 +1192,7 @@ impl Irgen {
                 // for assignment expression, rhs operand is returned
                 return Ok(rhs);
             }
-            BinaryOperator::LogicalAnd => {
+            BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr => {
                 let dtype = Dtype::BOOL;
                 let lhs = &binary.lhs.node;
                 let rhs = &binary.rhs.node;
@@ -1200,57 +1200,22 @@ impl Irgen {
 
                 // lhs condition block, false block
                 let lhs_true_bid = func_ctx.alloc_bid();
-                let lhs_true_context = BBContext::new(lhs_true_bid);
                 let lhs_false_bid = func_ctx.alloc_bid();
-                let exit_bid = func_ctx.alloc_bid();
-                let exit_context = BBContext::new(exit_bid);
-
-                self.translate_condition(lhs, lhs_true_bid, lhs_false_bid, func_ctx)?;
-                self.create_bool_block(lhs_false_bid, exit_bid, &res, false, func_ctx);
-                std::mem::replace(&mut func_ctx.curr_block, lhs_true_context);
-                let condition = self.translate_expression_rvalue(rhs, func_ctx)?;
-                let condition = self.translate_typecast_to_bool(&condition, func_ctx)?;
-                self.insert_instruction(
-                    ir::Instruction::Store {
-                        ptr: res.clone(),
-                        value: condition,
-                    },
-                    func_ctx,
-                )?;
-                let block = ir::Block {
-                    phinodes: Vec::new(),
-                    instructions: std::mem::replace(
-                        &mut func_ctx.curr_block.instructions,
-                        Vec::new(),
-                    ),
-                    exit: ir::BlockExit::Jump {
-                        arg: JumpArg::new(exit_bid, Vec::new()),
-                    },
+                let then_context = if op == BinaryOperator::LogicalAnd {
+                    BBContext::new(lhs_true_bid)
+                } else {
+                    BBContext::new(lhs_false_bid)
                 };
-                func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
-                std::mem::replace(&mut func_ctx.curr_block, exit_context);
-                return Ok(
-                    self.insert_instruction(ir::Instruction::Load { ptr: res.clone() }, func_ctx)?
-                );
-                std::mem::replace(&mut func_ctx.curr_block, exit_context);
-                return Ok(res);
-            }
-            BinaryOperator::LogicalOr => {
-                let dtype = Dtype::BOOL;
-                let lhs = &binary.lhs.node;
-                let rhs = &binary.rhs.node;
-                let res = func_ctx.alloc_tmp("t".to_owned(), dtype)?;
-
-                // lhs condition block, false block
-                let lhs_true_bid = func_ctx.alloc_bid();
-                let lhs_false_bid = func_ctx.alloc_bid();
-                let lhs_false_context = BBContext::new(lhs_false_bid);
                 let exit_bid = func_ctx.alloc_bid();
                 let exit_context = BBContext::new(exit_bid);
 
                 self.translate_condition(lhs, lhs_true_bid, lhs_false_bid, func_ctx)?;
-                self.create_bool_block(lhs_true_bid, exit_bid, &res, true, func_ctx);
-                std::mem::replace(&mut func_ctx.curr_block, lhs_false_context);
+                if op == BinaryOperator::LogicalAnd {
+                    self.create_bool_block(lhs_false_bid, exit_bid, &res, false, func_ctx);
+                } else {
+                    self.create_bool_block(lhs_true_bid, exit_bid, &res, true, func_ctx);
+                }
+                std::mem::replace(&mut func_ctx.curr_block, then_context);
                 let condition = self.translate_expression_rvalue(rhs, func_ctx)?;
                 let condition = self.translate_typecast_to_bool(&condition, func_ctx)?;
                 self.insert_instruction(
