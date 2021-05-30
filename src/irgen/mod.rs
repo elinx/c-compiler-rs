@@ -1235,7 +1235,9 @@ impl Irgen {
                 };
                 func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
                 std::mem::replace(&mut func_ctx.curr_block, exit_context);
-                return Ok(res);
+                return Ok(
+                    self.insert_instruction(ir::Instruction::Load { ptr: res.clone() }, func_ctx)?
+                );
             }
             _ => {}
         }
