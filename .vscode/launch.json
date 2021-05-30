@@ -43,7 +43,7 @@
             },
             "args": [
                 "-i",
-                "examples/c/logical_op.c"
+                "examples/c/foo2.c"
             ],
             "cwd": "${workspaceFolder}"
         },

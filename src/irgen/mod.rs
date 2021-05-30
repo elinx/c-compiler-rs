@@ -492,6 +492,23 @@ impl Irgen {
         Ok(())
     }
 
+    fn translate_for_initializer(
+        &self,
+        init: &ForInitializer,
+        cond_bid: BlockId,
+        func_ctx: &mut FunctionContext,
+    ) -> Result<(), IrgenError> {
+        Ok(match init {
+            ForInitializer::Empty => {}
+            ForInitializer::Expression(_) => {}
+            ForInitializer::Declaration(decl) => {
+                self.translate_declaration(&decl.node, func_ctx)?;
+                self.insert_jump_block(cond_bid, func_ctx)?
+            }
+            ForInitializer::StaticAssert(_) => {}
+        })
+    }
+
     fn translate_stmt(
         &self,
         statement: &Statement,
@@ -554,7 +571,43 @@ impl Irgen {
             Statement::Switch(_) => todo!("switch"),
             Statement::While(_) => todo!("while"),
             Statement::DoWhile(_) => todo!("do-while"),
-            Statement::For(_) => todo!("for"),
+            Statement::For(for_stmt) => {
+                let init_bid = func_ctx.alloc_bid();
+                let cond_bid = func_ctx.alloc_bid();
+                let body_bid = func_ctx.alloc_bid();
+                let step_bid = func_ctx.alloc_bid();
+                let exit_bid = func_ctx.alloc_bid();
+
+                // initializer in a seperate block
+                self.insert_jump_block(init_bid, func_ctx)?;
+                func_ctx.enter_scope();
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(init_bid));
+                self.translate_for_initializer(
+                    &for_stmt.node.initializer.node,
+                    cond_bid,
+                    func_ctx,
+                )?;
+                if let Some(ref cond) = for_stmt.node.condition {
+                    std::mem::replace(&mut func_ctx.curr_block, BBContext::new(cond_bid));
+                    self.translate_condition(&cond.deref().node, body_bid, exit_bid, func_ctx)?;
+
+                    std::mem::replace(&mut func_ctx.curr_block, BBContext::new(body_bid));
+                    self.translate_stmt(&for_stmt.node.statement.deref().node, func_ctx)?;
+
+                    if let Some(step) = &for_stmt.node.step {
+                        self.insert_jump_block(step_bid, func_ctx)?;
+                        std::mem::replace(&mut func_ctx.curr_block, BBContext::new(step_bid));
+                        self.translate_expression_rvalue(&step.deref().node, func_ctx)?;
+                        self.insert_jump_block(cond_bid, func_ctx)?;
+                    } else {
+                        self.insert_jump_block(cond_bid, func_ctx)?;
+                    }
+                } else {
+                    self.insert_jump_block(exit_bid, func_ctx)?;
+                }
+                func_ctx.exit_scope();
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(exit_bid));
+            }
             Statement::Goto(_) => todo!("goto"),
             Statement::Continue => todo!("continue"),
             Statement::Break => todo!("break"),
@@ -920,17 +973,17 @@ impl Irgen {
                 return Ok(value.clone());
             }
             // UnaryOperator::PostDecrement => {}
-            // UnaryOperator::PreIncrement => {}
-            UnaryOperator::PreDecrement => {
+            UnaryOperator::PreIncrement | UnaryOperator::PreDecrement => {
                 let operand = self.translate_expression_rvalue(&unary.operand.node, func_ctx)?;
                 log::debug!("operand: {:?}", operand);
-                let one = Operand::constant(ir::Constant::Int {
-                    value: 1,
-                    width: 8,
-                    is_signed: false,
-                });
+                let one = Operand::constant(ir::Constant::int(1, operand.dtype()));
+                let ast_op = if op == UnaryOperator::PreDecrement {
+                    BinaryOperator::Minus
+                } else {
+                    BinaryOperator::Plus
+                };
                 let sub_instr = Instruction::BinOp {
-                    op: BinaryOperator::Minus,
+                    op: ast_op,
                     lhs: operand.clone(),
                     rhs: one,
                     dtype: operand.dtype().clone(),
