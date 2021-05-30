@@ -86,11 +86,16 @@ impl FunctionContext {
         }
     }
 
-    #[allow(dead_code)]
     fn alloc_bid(&mut self) -> BlockId {
         let bid = BlockId(self.bid_counter);
         self.bid_counter += 1;
         bid
+    }
+
+    fn alloc_tempid(&mut self) -> usize {
+        let tid = self.tempid_counter;
+        self.tempid_counter += 1;
+        tid
     }
 
     fn enter_scope(&mut self) {
@@ -151,6 +156,19 @@ impl FunctionContext {
             ));
         }
         Ok(())
+    }
+
+    fn alloc_tmp(&mut self, name: String, dtype: Dtype) -> Result<Operand, IrgenError> {
+        let tempid = self.alloc_tempid();
+        let name = name + &tempid.to_string();
+        let allocation = Named::new(Some(name.clone()), dtype.clone());
+        self.allocations.push(allocation);
+        let aid = self.allocations.len() - 1;
+        let rid = RegisterId::Local { aid };
+        let operand = Operand::register(rid.clone(), Dtype::pointer(dtype.clone()));
+        // self.insert_symbol_table_entry(name.clone(), operand.clone())
+        //     .unwrap(); // TODO: better way to throw error
+        Ok(operand)
     }
 }
 
@@ -390,6 +408,42 @@ impl Irgen {
         Vec::new()
     }
 
+    fn insert_instruction(
+        &self,
+        instruction: ir::Instruction,
+        func_ctx: &mut FunctionContext,
+    ) -> Result<Operand, IrgenError> {
+        func_ctx
+            .curr_block
+            .instructions
+            .push(Named::new(None, instruction.clone()));
+
+        let iid = func_ctx.curr_block.instructions.len() - 1;
+        let bid = func_ctx.curr_block.bid;
+        let rid = RegisterId::Temp { bid, iid };
+        let operand = Operand::Register {
+            rid,
+            dtype: instruction.dtype().clone(),
+        };
+        Ok(operand)
+    }
+
+    fn translate_typecast_to_bool(
+        &self,
+        condition: &Operand,
+        func_ctx: &mut FunctionContext,
+    ) -> Result<Operand, IrgenError> {
+        self.insert_instruction(
+            ir::Instruction::BinOp {
+                op: BinaryOperator::Equals,
+                lhs: condition.clone(),
+                rhs: Operand::Constant(ir::Constant::int(0 as u128, Dtype::BOOL)),
+                dtype: Dtype::BOOL,
+            },
+            func_ctx,
+        )
+    }
+
     /// Add Exit block to previous basic block, and connect to newly created block `then`
     /// and `else`
     fn translate_condition(
@@ -400,6 +454,7 @@ impl Irgen {
         func_ctx: &mut FunctionContext,
     ) -> Result<(), IrgenError> {
         let condition = self.translate_expression_rvalue(cond, func_ctx)?;
+        let condition = self.translate_typecast_to_bool(&condition, func_ctx)?;
         let exit = BlockExit::ConditionalJump {
             condition,
             arg_then: Box::new(ir::JumpArg::new(bid_then, Vec::new())),
@@ -969,6 +1024,42 @@ impl Irgen {
         panic!("something wrong...")
     }
 
+    fn create_bool_block(
+        &self,
+        block_bid: BlockId,
+        exit_bid: BlockId,
+        result_ptr: &Operand,
+        value: bool,
+        func_ctx: &mut FunctionContext,
+    ) {
+        let value = if value { 1 as u128 } else { 0 as u128 };
+        let value = Operand::constant(ir::Constant::int(
+            value,
+            result_ptr
+                .dtype()
+                .get_pointer_inner()
+                .unwrap()
+                .deref()
+                .clone(),
+        ));
+        let mut false_context = BBContext::new(block_bid);
+        false_context.instructions.push(Named::new(
+            None,
+            Instruction::Store {
+                ptr: result_ptr.clone(),
+                value: value.clone(),
+            },
+        ));
+        let false_block = ir::Block {
+            phinodes: Vec::new(),
+            instructions: false_context.instructions,
+            exit: BlockExit::Jump {
+                arg: ir::JumpArg::new(exit_bid, Vec::new()),
+            },
+        };
+        func_ctx.blocks.insert(block_bid, false_block);
+    }
+
     fn translate_binary_operator(
         &self,
         binary: &BinaryOperatorExpression,
@@ -1077,6 +1168,59 @@ impl Irgen {
                 // log::debug!("assignment rhs: {:?}", &rhs);
                 // for assignment expression, rhs operand is returned
                 return Ok(rhs);
+            }
+            BinaryOperator::LogicalAnd => {
+                let dtype = Dtype::BOOL;
+                let lhs = &binary.lhs.node;
+                let rhs = &binary.rhs.node;
+                let res = func_ctx.alloc_tmp("tmp".to_owned(), dtype)?;
+
+                // lhs condition block, false block
+                let lhs_true_bid = func_ctx.alloc_bid();
+                let lhs_false_bid = func_ctx.alloc_bid();
+                let rhs_bid = func_ctx.alloc_bid();
+                let rhs_context = BBContext::new(rhs_bid);
+                let rhs_true_bid = func_ctx.alloc_bid();
+                let rhs_false_bid = func_ctx.alloc_bid();
+
+                let exit_bid = func_ctx.alloc_bid();
+                let exit_context = BBContext::new(exit_bid);
+
+                self.translate_condition(lhs, lhs_true_bid, lhs_false_bid, func_ctx)?;
+                self.create_bool_block(lhs_false_bid, exit_bid, &res, false, func_ctx);
+                self.create_bool_block(lhs_true_bid, rhs_bid, &res, false, func_ctx);
+                std::mem::replace(&mut func_ctx.curr_block, rhs_context);
+                self.translate_condition(rhs, rhs_true_bid, rhs_false_bid, func_ctx)?;
+                self.create_bool_block(rhs_false_bid, exit_bid, &res, false, func_ctx);
+                self.create_bool_block(rhs_true_bid, exit_bid, &res, true, func_ctx);
+                std::mem::replace(&mut func_ctx.curr_block, exit_context);
+                return Ok(res);
+            }
+            BinaryOperator::LogicalOr => {
+                let dtype = Dtype::BOOL;
+                let lhs = &binary.lhs.node;
+                let rhs = &binary.rhs.node;
+                let res = func_ctx.alloc_tmp("tmp".to_owned(), dtype)?;
+
+                // lhs condition block, false block
+                let lhs_true_bid = func_ctx.alloc_bid();
+                let lhs_false_bid = func_ctx.alloc_bid();
+                let exit_bid = func_ctx.alloc_bid();
+                let exit_context = BBContext::new(exit_bid);
+                let rhs_bid = lhs_false_bid;
+                let rhs_context = BBContext::new(rhs_bid);
+                let rhs_true_bid = func_ctx.alloc_bid();
+                let rhs_false_bid = func_ctx.alloc_bid();
+
+                self.translate_condition(lhs, lhs_true_bid, lhs_false_bid, func_ctx)?;
+                self.create_bool_block(lhs_true_bid, exit_bid, &res, true, func_ctx);
+                // self.create_bool_block(lhs_false_bid, rhs_bid, &res, false, func_ctx);
+                std::mem::replace(&mut func_ctx.curr_block, rhs_context);
+                self.translate_condition(rhs, rhs_true_bid, rhs_false_bid, func_ctx)?;
+                self.create_bool_block(rhs_true_bid, exit_bid, &res, true, func_ctx);
+                self.create_bool_block(rhs_false_bid, exit_bid, &res, false, func_ctx);
+                std::mem::replace(&mut func_ctx.curr_block, exit_context);
+                return Ok(res);
             }
             _ => {}
         }
