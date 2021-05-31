@@ -837,39 +837,26 @@ impl Irgen {
             Expression::Member(_) => todo!("member"),
             Expression::Call(call) => self.translate_call_expression(&call.deref().node, func_ctx),
             Expression::CompoundLiteral(_) => todo!("compound literal"),
-            Expression::SizeOf(expr) => {
+            Expression::SizeOf(expr) | Expression::AlignOf(expr) => {
                 let dtype = Dtype::try_from(&expr.node).map_err(|e| {
                     IrgenError::new(
                         expr.write_string(),
                         IrgenErrorMessage::InvalidDtype { dtype_error: e },
                     )
                 })?;
-                let (size_of, _) = dtype.size_align_of(&HashMap::new()).map_err(|e| {
+                let (size_of, align_of) = dtype.size_align_of(&HashMap::new()).map_err(|e| {
                     IrgenError::new(
                         expr.write_string(),
                         IrgenErrorMessage::InvalidDtype { dtype_error: e },
                     )
                 })?;
+                let value = match expression {
+                    Expression::SizeOf(_) => size_of,
+                    Expression::AlignOf(_) => align_of,
+                    _ => panic!("something strange happend"),
+                };
                 Ok(ir::Operand::constant(ir::Constant::int(
-                    size_of as u128,
-                    ir::Dtype::LONG,
-                )))
-            }
-            Expression::AlignOf(expr) => {
-                let dtype = Dtype::try_from(&expr.node).map_err(|e| {
-                    IrgenError::new(
-                        expr.write_string(),
-                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
-                    )
-                })?;
-                let (_, align_of) = dtype.size_align_of(&HashMap::new()).map_err(|e| {
-                    IrgenError::new(
-                        expr.write_string(),
-                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
-                    )
-                })?;
-                Ok(ir::Operand::constant(ir::Constant::int(
-                    align_of as u128,
+                    value as u128,
                     ir::Dtype::LONG,
                 )))
             }
