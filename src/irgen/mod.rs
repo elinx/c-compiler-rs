@@ -855,7 +855,24 @@ impl Irgen {
                     ir::Dtype::LONG,
                 )))
             }
-            Expression::AlignOf(_) => todo!("alignof"),
+            Expression::AlignOf(expr) => {
+                let dtype = Dtype::try_from(&expr.node).map_err(|e| {
+                    IrgenError::new(
+                        expr.write_string(),
+                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                    )
+                })?;
+                let (_, align_of) = dtype.size_align_of(&HashMap::new()).map_err(|e| {
+                    IrgenError::new(
+                        expr.write_string(),
+                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                    )
+                })?;
+                Ok(ir::Operand::constant(ir::Constant::int(
+                    align_of as u128,
+                    ir::Dtype::LONG,
+                )))
+            }
             Expression::UnaryOperator(unary) => {
                 self.translate_unary_operator(&unary.deref().node, func_ctx)
             }
