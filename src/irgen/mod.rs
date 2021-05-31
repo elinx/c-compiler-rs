@@ -450,6 +450,61 @@ impl Irgen {
         }
     }
 
+    fn translate_conditional(
+        &self,
+        expr: &ConditionalExpression,
+        func_ctx: &mut FunctionContext,
+    ) -> Result<Operand, IrgenError> {
+        let then_bid = func_ctx.alloc_bid();
+        let else_bid = func_ctx.alloc_bid();
+        let exit_bid = func_ctx.alloc_bid();
+
+        let condition = &expr.condition.deref().node;
+        self.translate_condition(condition, then_bid, else_bid, func_ctx)?;
+
+        std::mem::replace(&mut func_ctx.curr_block, BBContext::new(then_bid));
+        let then_expr = &expr.then_expression.deref().node;
+        let then_operand = self.translate_expression_rvalue(then_expr, func_ctx)?;
+        self.insert_jump_block(exit_bid, func_ctx)?;
+
+        std::mem::replace(&mut func_ctx.curr_block, BBContext::new(else_bid));
+        let else_expr = &expr.else_expression.deref().node;
+        let else_operand = self.translate_expression_rvalue(else_expr, func_ctx)?;
+        self.insert_jump_block(exit_bid, func_ctx)?;
+
+        let dtype = self.translate_merge_type(&then_operand.dtype(), &else_operand.dtype())?;
+        let res = func_ctx.alloc_tmp("t".to_owned(), dtype)?;
+
+        // store result from then/else to result
+        func_ctx
+            .blocks
+            .get_mut(&then_bid)
+            .unwrap()
+            .instructions
+            .push(Named::new(
+                None,
+                ir::Instruction::Store {
+                    ptr: res.clone(),
+                    value: then_operand,
+                },
+            ));
+        func_ctx
+            .blocks
+            .get_mut(&else_bid)
+            .unwrap()
+            .instructions
+            .push(Named::new(
+                None,
+                ir::Instruction::Store {
+                    ptr: res.clone(),
+                    value: else_operand,
+                },
+            ));
+
+        std::mem::replace(&mut func_ctx.curr_block, BBContext::new(exit_bid));
+        Ok(self.insert_instruction(ir::Instruction::Load { ptr: res.clone() }, func_ctx)?)
+    }
+
     /// Add Exit block to previous basic block, and connect to newly created block `then`
     /// and `else`
     fn translate_condition(
@@ -540,15 +595,16 @@ impl Irgen {
                     func_ctx,
                 )?;
 
-                let then_contex = BBContext::new(bid_then);
-                std::mem::replace(&mut func_ctx.curr_block, then_contex);
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(bid_then));
                 self.translate_stmt(&if_stmt.node.then_statement.node, func_ctx)?;
                 // Do I need to insert exit block in the end? because then block may contains
                 // a return statement which has added a BlockExit already.
                 self.insert_jump_block(bid_end, func_ctx)?;
 
                 if let Some(ref else_stmt) = if_stmt.node.else_statement {
+                    std::mem::replace(&mut func_ctx.curr_block, BBContext::new(bid_else));
                     self.translate_stmt(&else_stmt.deref().node, func_ctx)?;
+                    self.insert_jump_block(bid_end, func_ctx)?;
                 } else {
                     // create a block which only contains one jump instruction
                     let else_contex = BBContext::new(bid_else);
@@ -569,7 +625,26 @@ impl Irgen {
                 std::mem::replace(&mut func_ctx.curr_block, end_contex);
             }
             Statement::Switch(_) => todo!("switch"),
-            Statement::While(_) => todo!("while"),
+            Statement::While(while_stmt) => {
+                let cond = &while_stmt.node.expression.deref().node;
+                let statement = &while_stmt.node.statement.deref().node;
+                let cond_bid = func_ctx.alloc_bid();
+                let body_bid = func_ctx.alloc_bid();
+                let exit_bid = func_ctx.alloc_bid();
+
+                // cond block
+                self.insert_jump_block(cond_bid, func_ctx)?;
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(cond_bid));
+                self.translate_condition(cond, body_bid, exit_bid, func_ctx)?;
+
+                // body statements
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(body_bid));
+                self.translate_stmt(statement, func_ctx)?;
+                self.insert_jump_block(cond_bid, func_ctx)?;
+
+                // exit block
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(exit_bid));
+            }
             Statement::DoWhile(_) => todo!("do-while"),
             Statement::For(for_stmt) => {
                 let init_bid = func_ctx.alloc_bid();
@@ -867,7 +942,9 @@ impl Irgen {
             Expression::BinaryOperator(bop) => {
                 self.translate_binary_operator(&bop.deref().node, func_ctx)
             }
-            Expression::Conditional(_) => todo!("conditional"),
+            Expression::Conditional(expr) => {
+                self.translate_conditional(&expr.deref().node, func_ctx)
+            }
             Expression::Comma(_) => todo!("comma"),
             Expression::OffsetOf(_) => todo!("offsetof"),
             Expression::VaArg(_) => todo!("vaarg"),
@@ -1095,7 +1172,17 @@ impl Irgen {
                 return Ok(operand.clone());
             }
             // UnaryOperator::Plus => {}
-            // UnaryOperator::Minus => {}
+            UnaryOperator::Minus => {
+                let operand = self.translate_expression_rvalue(&unary.operand.node, func_ctx)?;
+                return Ok(self.insert_instruction(
+                    ir::Instruction::UnaryOp {
+                        op,
+                        operand: operand.clone(),
+                        dtype: operand.dtype().clone(),
+                    },
+                    func_ctx,
+                )?);
+            }
             // UnaryOperator::Complement => {}
             // UnaryOperator::Negate => {}
             // UnaryOperator::SizeOf => {}
@@ -1153,7 +1240,6 @@ impl Irgen {
             BinaryOperator::Assign
             | BinaryOperator::AssignDivide
             | BinaryOperator::AssignModulo
-            | BinaryOperator::AssignMinus
             | BinaryOperator::AssignShiftLeft
             | BinaryOperator::AssignShiftRight
             | BinaryOperator::AssignBitwiseAnd
@@ -1186,7 +1272,7 @@ impl Irgen {
                 // for assignment expression, rhs operand is returned
                 return Ok(rhs);
             }
-            BinaryOperator::AssignPlus => {
+            BinaryOperator::AssignPlus | BinaryOperator::AssignMinus => {
                 let lhs = self.translate_expression_lvalue(&binary.lhs.node, func_ctx)?;
                 let rhs = self.translate_expression_rvalue(&binary.rhs.node, func_ctx)?;
                 log::debug!("op: {:?}\n lhs: {:?}\n rhs: {:?}\n", op, lhs, rhs);
@@ -1222,8 +1308,13 @@ impl Irgen {
                 let target_type = lhs_value.dtype().clone();
                 let rhs = self.translate_typecast(&rhs, &target_type, func_ctx)?;
 
+                let op = if op == BinaryOperator::AssignPlus {
+                    BinaryOperator::Plus
+                } else {
+                    BinaryOperator::Minus
+                };
                 let add_instr = Instruction::BinOp {
-                    op: BinaryOperator::Plus,
+                    op,
                     lhs: lhs_value,
                     rhs: rhs.clone(),
                     dtype: target_type.clone(),
