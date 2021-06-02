@@ -840,6 +840,129 @@ impl Irgen {
         Ok(operand)
     }
 
+    fn translate_index_op_inner(
+        &self,
+        base: ir::Operand,
+        index: ir::Operand,
+        func_ctx: &mut FunctionContext,
+    ) -> Result<Operand, IrgenError> {
+        println!("\nindex_op_inner:\n base: {:?}\n index: {:?}", base, index);
+        let inner_dtype = base
+            .dtype()
+            .get_pointer_inner()
+            .ok_or(IrgenError::new(
+                base.write_string(),
+                IrgenErrorMessage::Misc {
+                    message: "invlaid lhs value for index".to_owned(),
+                },
+            ))?
+            .clone();
+        // Pointer{Pointer{Int}}
+        // Pointer{Pointer{Pointer{Int}}}
+        // Pointer{Array{Int}}
+        // Pointer{Array{Array{Int}}}
+        match inner_dtype {
+            Dtype::Pointer { inner, .. } => {
+                let base =
+                    self.insert_instruction(ir::Instruction::Load { ptr: base.clone() }, func_ctx)?;
+                let inner_size = inner
+                    .deref()
+                    .size_align_of(&HashMap::new())
+                    .map_err(|e| {
+                        IrgenError::new(
+                            index.write_string(),
+                            IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                        )
+                    })?
+                    .0;
+                let index = self.insert_instruction(
+                    ir::Instruction::TypeCast {
+                        value: index,
+                        target_dtype: Dtype::LONGLONG,
+                    },
+                    func_ctx,
+                )?;
+                let index = self.insert_instruction(
+                    ir::Instruction::BinOp {
+                        op: BinaryOperator::Multiply,
+                        lhs: index,
+                        rhs: ir::Operand::constant(ir::Constant::int(
+                            inner_size as u128,
+                            ir::Dtype::LONG,
+                        )),
+                        dtype: Dtype::LONGLONG,
+                    },
+                    func_ctx,
+                )?;
+
+                return self.insert_instruction(
+                    ir::Instruction::GetElementPtr {
+                        ptr: base.clone(),
+                        offset: index.clone(),
+                        dtype: Box::new(base.dtype().clone()),
+                    },
+                    func_ctx,
+                );
+            }
+            Dtype::Array { inner, size } => {
+                let dtype = Box::new(Dtype::pointer(inner.deref().clone()));
+                let inner_size = size
+                    * inner
+                        .deref()
+                        .size_align_of(&HashMap::new())
+                        .map_err(|e| {
+                            IrgenError::new(
+                                index.write_string(),
+                                IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                            )
+                        })?
+                        .0;
+                let index = self.insert_instruction(
+                    ir::Instruction::TypeCast {
+                        value: index,
+                        target_dtype: Dtype::LONGLONG,
+                    },
+                    func_ctx,
+                )?;
+                let index = self.insert_instruction(
+                    ir::Instruction::BinOp {
+                        op: BinaryOperator::Multiply,
+                        lhs: index,
+                        rhs: ir::Operand::constant(ir::Constant::int(
+                            inner_size as u128,
+                            ir::Dtype::LONG,
+                        )),
+                        dtype: Dtype::LONGLONG,
+                    },
+                    func_ctx,
+                )?;
+
+                return self.insert_instruction(
+                    ir::Instruction::GetElementPtr {
+                        ptr: base,
+                        offset: index,
+                        dtype: dtype.clone(),
+                    },
+                    func_ctx,
+                );
+            }
+            Dtype::Struct { .. } => todo!(),
+            _ => panic!("invalid lhs value dtype"),
+        };
+    }
+
+    fn translate_index_op(
+        &self,
+        base: &Expression,
+        index: &Expression,
+        func_ctx: &mut FunctionContext,
+    ) -> Result<Operand, IrgenError> {
+        println!("\nindex_op:\n base: {:?}\n index: {:?}", base, index);
+        let base_operand = self.translate_expression_lvalue(base, func_ctx)?;
+        let index_operand = self.translate_expression_rvalue(index, func_ctx)?;
+        self.translate_index_op_inner(base_operand, index_operand, func_ctx)
+    }
+
     fn translate_expression_lvalue(
         &self,
         expression: &Expression,
@@ -881,7 +1004,19 @@ impl Irgen {
                 // self.translate_unary_operator(&unary.deref().node, func_ctx)
             }
             Expression::Cast(_) => todo!("cast"),
-            Expression::BinaryOperator(_) => todo!("bin expr"),
+            Expression::BinaryOperator(binop_expr) => match binop_expr.deref().node.operator.node {
+                BinaryOperator::Index => self.translate_index_op(
+                    &binop_expr.deref().node.lhs.node,
+                    &binop_expr.deref().node.rhs.node,
+                    func_ctx,
+                ),
+                _ => Err(IrgenError::new(
+                    expression.write_string(),
+                    IrgenErrorMessage::Misc {
+                        message: "only Index binary operator could be served as lvalue".to_owned(),
+                    },
+                )),
+            },
             Expression::Conditional(_) => todo!("conditional"),
             Expression::Comma(_) => todo!("comma"),
             Expression::OffsetOf(_) => todo!("offsetof"),
@@ -1388,6 +1523,9 @@ impl Irgen {
                 return Ok(
                     self.insert_instruction(ir::Instruction::Load { ptr: res.clone() }, func_ctx)?
                 );
+            }
+            BinaryOperator::Index => {
+                return self.translate_index_op(&binary.lhs.node, &binary.rhs.node, func_ctx);
             }
             _ => {}
         }
