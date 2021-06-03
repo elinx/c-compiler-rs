@@ -313,17 +313,24 @@ impl Irgen {
         } else {
             ir::Operand::constant(ir::Constant::undef(ret_dtype))
         };
-        let block = ir::Block {
-            phinodes: Vec::new(),
-            instructions: Vec::new(),
-            exit: BlockExit::Return { value },
-        };
-        let bid = if func_ctx.blocks.is_empty() {
-            func_ctx.curr_block.bid
+        // Close the function exit block if there's no return statement at last
+        // of function body
+        if func_ctx.blocks.get(&func_ctx.curr_block.bid).is_none() {
+            let block = ir::Block {
+                phinodes: std::mem::replace(&mut func_ctx.curr_block.phinodes, Vec::new()),
+                instructions: std::mem::replace(&mut func_ctx.curr_block.instructions, Vec::new()),
+                exit: BlockExit::Return { value },
+            };
+            func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
         } else {
-            func_ctx.alloc_bid()
-        };
-        func_ctx.blocks.insert(bid, block);
+            let block = ir::Block {
+                phinodes: Vec::new(),
+                instructions: Vec::new(),
+                exit: BlockExit::Return { value },
+            };
+            let bid = func_ctx.alloc_bid();
+            func_ctx.blocks.insert(bid, block);
+        }
 
         let definition = Some(ir::FunctionDefinition {
             allocations: func_ctx.allocations,
