@@ -852,7 +852,7 @@ impl Irgen {
         index: ir::Operand,
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
-        println!("\nindex_op_inner:\n base: {:?}\n index: {:?}", base, index);
+        log::debug!("\nindex_op_inner:\n base: {:?}\n index: {:?}", base, index);
         let inner_dtype = base
             .dtype()
             .get_pointer_inner()
@@ -1003,7 +1003,7 @@ impl Irgen {
         index: &Expression,
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
-        println!("\nindex_op:\n base: {:?}\n index: {:?}", base, index);
+        log::debug!("\nindex_op:\n base: {:?}\n index: {:?}", base, index);
         let base_operand = self.translate_expression_lvalue(base, func_ctx)?;
         let index_operand = self.translate_expression_rvalue(index, func_ctx)?;
         self.translate_index_op_inner(base_operand, index_operand, func_ctx)
