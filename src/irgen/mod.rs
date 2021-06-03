@@ -904,19 +904,18 @@ impl Irgen {
                     func_ctx,
                 );
             }
-            Dtype::Array { inner, size } => {
+            Dtype::Array { inner, .. } => {
                 let dtype = Box::new(Dtype::pointer(inner.deref().clone()));
-                let inner_size = size
-                    * inner
-                        .deref()
-                        .size_align_of(&HashMap::new())
-                        .map_err(|e| {
-                            IrgenError::new(
-                                index.write_string(),
-                                IrgenErrorMessage::InvalidDtype { dtype_error: e },
-                            )
-                        })?
-                        .0;
+                let inner_size = inner
+                    .deref()
+                    .size_align_of(&HashMap::new())
+                    .map_err(|e| {
+                        IrgenError::new(
+                            index.write_string(),
+                            IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                        )
+                    })?
+                    .0;
                 let index = self.insert_instruction(
                     ir::Instruction::TypeCast {
                         value: index,
@@ -1520,12 +1519,12 @@ impl Irgen {
                 };
                 func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
                 std::mem::replace(&mut func_ctx.curr_block, exit_context);
-                return Ok(
-                    self.insert_instruction(ir::Instruction::Load { ptr: res.clone() }, func_ctx)?
-                );
+                return self
+                    .insert_instruction(ir::Instruction::Load { ptr: res.clone() }, func_ctx);
             }
             BinaryOperator::Index => {
-                return self.translate_index_op(&binary.lhs.node, &binary.rhs.node, func_ctx);
+                let ptr = self.translate_index_op(&binary.lhs.node, &binary.rhs.node, func_ctx)?;
+                return self.insert_instruction(ir::Instruction::Load { ptr }, func_ctx);
             }
             _ => {}
         }
@@ -1769,25 +1768,26 @@ impl Irgen {
 
         // need to load the identifier if the inner data type is a pointer
         // if operand.get_register().is_some() && operand.dtype().get_pointer_inner().is_some() {
-        if operand.dtype().get_pointer_inner().is_some() {
-            let instr = Instruction::Load {
-                ptr: operand.clone(),
-            };
-            func_ctx
-                .curr_block
-                .instructions
-                .push(Named::new(None, instr));
-
-            let iid = func_ctx.curr_block.instructions.len() - 1;
-            let bid = func_ctx.curr_block.bid;
-            let rid = RegisterId::Temp { bid, iid };
-            // the operand type is not pointer type, need to fetch the inner type
-            // unwrap is safe here for pre-confirmation.
-            let operand = Operand::Register {
-                rid,
-                dtype: operand.dtype().get_pointer_inner().unwrap().clone(),
-            };
-            return Ok(operand);
+        if let Some(ptr_dtype) = operand.dtype().get_pointer_inner() {
+            // Can not load `Pointer{Array{Int}}` directly into a register, use
+            // GET unwrap instead.
+            if let Some(inner_dtype) = ptr_dtype.get_array_inner() {
+                return self.insert_instruction(
+                    ir::Instruction::GetElementPtr {
+                        ptr: operand.clone(),
+                        offset: Operand::Constant(ir::Constant::int(0, Dtype::INT)),
+                        dtype: Box::new(Dtype::pointer(inner_dtype.clone())),
+                    },
+                    func_ctx,
+                );
+            } else {
+                return self.insert_instruction(
+                    ir::Instruction::Load {
+                        ptr: operand.clone(),
+                    },
+                    func_ctx,
+                );
+            }
         }
         Ok(operand)
     }
