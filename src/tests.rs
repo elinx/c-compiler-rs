@@ -170,7 +170,6 @@ pub fn test_irgen(path: &Path) {
     let status = some_or_exit!(status.code(), SKIP_TEST);
     drop(temp_file);
     temp_dir.close().expect("temp dir deletion failed");
-    println!("ir: {:?}", ir);
 
     // Interpret resolved ir
     let args = Vec::new();

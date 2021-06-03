@@ -248,27 +248,28 @@ impl Irgen {
         let specifiers = &func.specifiers;
         let declarator = &func.declarator.node;
         let func_name = self.name_of_declarator(declarator);
-        let (ret_dtype, _is_typedef) = ir::Dtype::try_from_ast_declaration_specifiers(specifiers)
-            .map_err(|e| {
-            IrgenError::new(
-                func.declarator.write_string(),
-                IrgenErrorMessage::InvalidDtype { dtype_error: e },
-            )
-        })?;
-        log::debug!("function dtype: {:?}", ret_dtype);
-
-        // only return type is fetched from specifiers, try to get more information for
-        // the declarators
-        let dtype = ret_dtype
-            .clone()
-            .with_ast_declarator(declarator)
+        let (base_dtype, _is_typedef) = ir::Dtype::try_from_ast_declaration_specifiers(specifiers)
             .map_err(|e| {
                 IrgenError::new(
                     func.declarator.write_string(),
                     IrgenErrorMessage::InvalidDtype { dtype_error: e },
                 )
             })?;
-        log::debug!("function dtype: {:?}", dtype);
+        log::debug!("function dtype: {:?}", base_dtype);
+
+        // only return type is fetched from specifiers, try to get more information for
+        // the declarators
+        let func_dtype = base_dtype
+            .with_ast_declarator(declarator)
+            .map_err(|e| {
+                IrgenError::new(
+                    func.declarator.write_string(),
+                    IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                )
+            })?
+            .deref()
+            .clone();
+        log::debug!("function dtype: {:?}", func_dtype);
 
         // create global symbol table and insert global variables and functions into global symbol,
         // note that the global and function definitions are added linearly which means only the former
@@ -285,15 +286,13 @@ impl Irgen {
             func_name.clone(),
             Operand::Constant(ir::Constant::global_variable(
                 func_name.clone(),
-                dtype.deref().clone(),
+                func_dtype.clone(),
             )),
         );
 
-        let signature = FunctionSignature::new(dtype.deref().clone());
-        let mut func_ctx = FunctionContext::new(
-            dtype.deref().get_function_inner().unwrap().0.clone(),
-            global_symbol_table,
-        );
+        let signature = FunctionSignature::new(func_dtype.clone());
+        let ret_dtype = func_dtype.get_function_inner().unwrap().0.clone();
+        let mut func_ctx = FunctionContext::new(ret_dtype.clone(), global_symbol_table);
 
         let params_name = self.params_name_of_declarator(declarator);
         func_ctx.enter_scope();
@@ -864,11 +863,52 @@ impl Irgen {
                 },
             ))?
             .clone();
+        // Pointer{Int}
         // Pointer{Pointer{Int}}
         // Pointer{Pointer{Pointer{Int}}}
         // Pointer{Array{Int}}
         // Pointer{Array{Array{Int}}}
         match inner_dtype {
+            Dtype::Int { .. } | Dtype::Float { .. } => {
+                // TODO: handle case like `int a; a[0]`.
+                let inner_size = inner_dtype
+                    .size_align_of(&HashMap::new())
+                    .map_err(|e| {
+                        IrgenError::new(
+                            index.write_string(),
+                            IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                        )
+                    })?
+                    .0;
+                let index = self.insert_instruction(
+                    ir::Instruction::TypeCast {
+                        value: index,
+                        target_dtype: Dtype::LONGLONG,
+                    },
+                    func_ctx,
+                )?;
+                let index = self.insert_instruction(
+                    ir::Instruction::BinOp {
+                        op: BinaryOperator::Multiply,
+                        lhs: index,
+                        rhs: ir::Operand::constant(ir::Constant::int(
+                            inner_size as u128,
+                            ir::Dtype::LONG,
+                        )),
+                        dtype: Dtype::LONGLONG,
+                    },
+                    func_ctx,
+                )?;
+
+                return self.insert_instruction(
+                    ir::Instruction::GetElementPtr {
+                        ptr: base.clone(),
+                        offset: index.clone(),
+                        dtype: Box::new(base.dtype().clone()),
+                    },
+                    func_ctx,
+                );
+            }
             Dtype::Pointer { inner, .. } => {
                 let base =
                     self.insert_instruction(ir::Instruction::Load { ptr: base.clone() }, func_ctx)?;
@@ -991,7 +1031,7 @@ impl Irgen {
             Expression::StringLiteral(_) => todo!("string literal"),
             Expression::GenericSelection(_) => todo!("generic selection"),
             Expression::Member(_) => todo!("member"),
-            Expression::Call(_) => todo!("call expr as lvalue"),
+            Expression::Call(call) => self.translate_call_expression(&call.deref().node, func_ctx),
             Expression::CompoundLiteral(_) => todo!("compound literal"),
             Expression::SizeOf(_) => todo!("sizeof"),
             Expression::AlignOf(_) => todo!("alignof"),
@@ -1106,25 +1146,6 @@ impl Irgen {
             args.push(arg.clone());
         }
         let return_type = func_ctx.lookup_symbol_table(call.callee.deref().write_string())?;
-        // log::debug!("call expression function type: {:?}", function_type);
-        // let return_type = function_type
-        //     .dtype()
-        //     .get_pointer_inner()
-        //     .ok_or(IrgenError::new(
-        //         call.write_string(),
-        //         IrgenErrorMessage::Misc {
-        //             message: "invlaid function type".to_owned(),
-        //         },
-        //     ))?
-        //     .get_function_inner()
-        //     .ok_or(IrgenError::new(
-        //         call.write_string(),
-        //         IrgenErrorMessage::Misc {
-        //             message: "invlaid function type".to_owned(),
-        //         },
-        //     ))?
-        //     .0
-        //     .clone();
 
         log::debug!("call expression return type: {:?}", return_type);
         let return_type = return_type
