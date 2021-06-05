@@ -43,7 +43,7 @@
             },
             "args": [
                 "-i",
-                "examples/c/fibonacci.c"
+                "examples/c/cmp.c"
             ],
             "cwd": "${workspaceFolder}"
         },

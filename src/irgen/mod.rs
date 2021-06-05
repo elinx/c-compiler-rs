@@ -1592,6 +1592,17 @@ impl Irgen {
         let rhs = self.translate_expression_rvalue(&binary.rhs.node, func_ctx)?;
         log::debug!("op: {:?}\n lhs: {:?}\n rhs: {:?}\n", op, lhs, rhs);
 
+        // let target_dtype = match op {
+        //     BinaryOperator::Less
+        //     | BinaryOperator::Greater
+        //     | BinaryOperator::LessOrEqual
+        //     | BinaryOperator::GreaterOrEqual
+        //     | BinaryOperator::Equals
+        //     | BinaryOperator::NotEquals
+        //     | BinaryOperator::LogicalAnd
+        //     | BinaryOperator::LogicalOr => Dtype::INT,
+        //     _ => self.translate_merge_type(&lhs.dtype(), &rhs.dtype())?,
+        // };
         let target_dtype = self.translate_merge_type(&lhs.dtype(), &rhs.dtype())?;
         log::debug!("merged dtype: {:?}", target_dtype);
 
@@ -1654,11 +1665,44 @@ impl Irgen {
                     is_signed: r_is_signed,
                     is_const: r_is_const,
                 },
-            ) => Ok(Dtype::Int {
-                width: cmp::max(*l_width, *r_width),
-                is_signed: *l_is_signed || *r_is_signed,
-                is_const: *l_is_const && *r_is_const,
-            }),
+            ) => {
+                // operands with width less than integer should be promoted to i32
+                const SIZE_OF_INT: usize = Dtype::SIZE_OF_INT * Dtype::BITS_OF_BYTE;
+                let (l_width, l_is_signed) = if *l_width < SIZE_OF_INT {
+                    (SIZE_OF_INT, true)
+                } else {
+                    (*l_width, *l_is_signed)
+                };
+                let (r_width, r_is_signed) = if *r_width < SIZE_OF_INT {
+                    (SIZE_OF_INT, true)
+                } else {
+                    (*r_width, *r_is_signed)
+                };
+                // both are signed or both are unsigned, the one
+                // with longest width wins
+                if !(l_is_signed ^ r_is_signed) {
+                    return Ok(Dtype::Int {
+                        width: cmp::max(l_width, r_width),
+                        is_signed: l_is_signed,
+                        is_const: *l_is_const && *r_is_const,
+                    });
+                }
+                // operands with differnet signess:
+                //   * same width: unsigned
+                //   * not same width: convert to the one with longest width
+                let is_signed = if l_width == r_width {
+                    false
+                } else if l_width > r_width {
+                    l_is_signed
+                } else {
+                    r_is_signed
+                };
+                Ok(Dtype::Int {
+                    width: cmp::max(l_width, r_width),
+                    is_signed,
+                    is_const: *l_is_const && *r_is_const,
+                })
+            }
             // (Dtype::Int { width, is_signed, is_const }, Dtype::Float { width, is_const }) => {}
             // (Dtype::Int { width, is_signed, is_const }, Dtype::Pointer { inner, is_const }) => {}
             // (Dtype::Int { width, is_signed, is_const }, Dtype::Array { inner, size }) => {}
