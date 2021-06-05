@@ -559,15 +559,17 @@ impl Irgen {
         cond_bid: BlockId,
         func_ctx: &mut FunctionContext,
     ) -> Result<(), IrgenError> {
-        Ok(match init {
+        match init {
             ForInitializer::Empty => {}
-            ForInitializer::Expression(_) => {}
+            ForInitializer::Expression(expr) => {
+                self.translate_expression_rvalue(&expr.deref().node, func_ctx)?;
+            }
             ForInitializer::Declaration(decl) => {
                 self.translate_declaration(&decl.node, func_ctx)?;
-                self.insert_jump_block(cond_bid, func_ctx)?
             }
             ForInitializer::StaticAssert(_) => {}
-        })
+        };
+        self.insert_jump_block(cond_bid, func_ctx)
     }
 
     fn translate_stmt(

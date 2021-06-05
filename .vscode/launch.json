@@ -43,7 +43,7 @@
             },
             "args": [
                 "-i",
-                "examples/c/array.c"
+                "examples/c/simple_for.c"
             ],
             "cwd": "${workspaceFolder}"
         },
