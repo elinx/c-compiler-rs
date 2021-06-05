@@ -1161,38 +1161,53 @@ impl Irgen {
         call: &CallExpression,
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
-        let callee = self.translate_expression_rvalue(&call.callee.deref().node, func_ctx)?;
-        let mut args = Vec::new();
-        for argument in &call.arguments {
-            let argument = &argument.node;
-            let arg = self.translate_expression_rvalue(&argument, func_ctx)?;
-            args.push(arg.clone());
-        }
-        let return_type = func_ctx.lookup_symbol_table(call.callee.deref().write_string())?;
+        // TODO: chain all the following statements
+        let func_type = func_ctx
+            .lookup_symbol_table(call.callee.deref().write_string())?
+            .dtype();
+        // function dtype is wrapped into a pointer dtype, so need to
+        // unwrap pointer type first
+        let func_type = func_type
+            .get_pointer_inner()
+            .ok_or(IrgenError::new(
+                call.write_string(),
+                IrgenErrorMessage::Misc {
+                    message: "function dtype is wrapped into a pointer type".to_owned(),
+                },
+            ))?
+            .get_function_inner()
+            .ok_or(IrgenError::new(
+                call.write_string(),
+                IrgenErrorMessage::Misc {
+                    message: "not a function type".to_owned(),
+                },
+            ))?;
 
-        log::debug!("call expression return type: {:?}", return_type);
-        let return_type = return_type
-            .get_constant()
-            .map_or(ir::Constant::unit(), |c| c.clone())
-            .get_function_ret()
-            .unwrap();
-        let instr = Instruction::Call {
-            callee,
-            args,
-            return_type: return_type.clone(),
-        };
-        func_ctx
-            .curr_block
-            .instructions
-            .push(Named::new(None, instr));
-        let iid = func_ctx.curr_block.instructions.len() - 1;
-        let bid = func_ctx.curr_block.bid;
-        let rid = RegisterId::Temp { bid, iid };
-        let operand = Operand::Register {
-            rid,
-            dtype: return_type.clone(),
-        };
-        Ok(operand)
+        // need to typecast argument to it's specific parameter type
+        let params_type = func_type.1;
+        let args: Result<Vec<_>, _> = call
+            .arguments
+            .iter()
+            .zip(params_type.iter())
+            .map(|(arg, param_dtype)| {
+                let argument = &arg.node;
+                self.translate_expression_rvalue(&argument, func_ctx)
+                    .and_then(|arg| self.translate_typecast(&arg, param_dtype, func_ctx))
+            })
+            .collect();
+        let args = args?;
+
+        log::debug!("call expression return type: {:?}", func_type);
+        let return_type = func_type.0;
+        let callee = self.translate_expression_rvalue(&call.callee.deref().node, func_ctx)?;
+        self.insert_instruction(
+            ir::Instruction::Call {
+                callee,
+                args,
+                return_type: return_type.clone(),
+            },
+            func_ctx,
+        )
     }
 
     fn translate_unary_operator(
@@ -1843,16 +1858,6 @@ impl ir::Constant {
         match self {
             ir::Constant::GlobalVariable { dtype, .. } => dtype.get_function_inner().is_some(),
             _ => false,
-        }
-    }
-
-    fn get_function_ret(&self) -> Option<Dtype> {
-        match self {
-            ir::Constant::GlobalVariable { dtype, .. } => match dtype {
-                Dtype::Function { ret, .. } => Some(ret.deref().clone()),
-                _ => None,
-            },
-            _ => None,
         }
     }
 }

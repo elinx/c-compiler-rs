@@ -43,7 +43,7 @@
             },
             "args": [
                 "-i",
-                "examples/c/simple_for.c"
+                "examples/c/fibonacci.c"
             ],
             "cwd": "${workspaceFolder}"
         },

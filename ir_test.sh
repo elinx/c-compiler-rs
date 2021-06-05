@@ -6,6 +6,7 @@ test_cases=(
     fib3.c
     fib4.c
     fib5.c
+    bar.c
     alignof.c
     array.c
     array2.c
@@ -19,11 +20,10 @@ test_cases=(
     return_void.c
     logical_op.c
     gcd.c
+    cmp.c
     array4.c
     array5.c
-    bar.c
     bitwise.c
-    cmp.c
     comma.c
     complete_cond.c
     cond_and_loop.c
