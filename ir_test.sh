@@ -16,6 +16,7 @@ test_cases=(
 for test_case in "${test_cases[@]}"; do
     cargo run --release --bin fuzz "examples/c/${test_case}" -i
     if [ $? -ne 0 ]; then
-        cargo run -- -i "examples/c/${test_case}"
+        cargo run -- -i "examples/c/${test_case}" | tee temp.ir
+        diff temp.ir "examples/ir0/${test_case%c}ir"
     fi
 done
