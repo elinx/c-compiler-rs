@@ -2,6 +2,10 @@
 
 test_cases=(
     fibonacci.c
+    fib2.c
+    fib3.c
+    fib4.c
+    fib5.c
     alignof.c
     array.c
     array2.c
@@ -24,10 +28,6 @@ test_cases=(
     complete_cond.c
     cond_and_loop.c
     cond.c
-    fib2.c
-    fib3.c
-    fib4.c
-    fib5.c
     float.c
     float2_gen.py
     float2.c

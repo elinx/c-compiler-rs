@@ -655,7 +655,26 @@ impl Irgen {
                 // exit block
                 std::mem::replace(&mut func_ctx.curr_block, BBContext::new(exit_bid));
             }
-            Statement::DoWhile(_) => todo!("do-while"),
+            Statement::DoWhile(do_while_stmt) => {
+                let body = &do_while_stmt.node.statement.deref().node;
+                let cond = &do_while_stmt.node.expression.deref().node;
+                let body_bid = func_ctx.alloc_bid();
+                let cond_bid = func_ctx.alloc_bid();
+                let exit_bid = func_ctx.alloc_bid();
+
+                // body block
+                self.insert_jump_block(body_bid, func_ctx)?;
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(body_bid));
+                self.translate_stmt(body, func_ctx)?;
+
+                // condition block
+                self.insert_jump_block(cond_bid, func_ctx)?;
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(cond_bid));
+                self.translate_condition(cond, body_bid, exit_bid, func_ctx)?;
+
+                // exit block
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(exit_bid));
+            }
             Statement::For(for_stmt) => {
                 let init_bid = func_ctx.alloc_bid();
                 let cond_bid = func_ctx.alloc_bid();
