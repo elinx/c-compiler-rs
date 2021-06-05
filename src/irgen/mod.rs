@@ -542,14 +542,16 @@ impl Irgen {
         bid_end: BlockId,
         func_ctx: &mut FunctionContext,
     ) -> Result<(), IrgenError> {
-        let block = ir::Block {
-            phinodes: std::mem::replace(&mut func_ctx.curr_block.phinodes, Vec::new()),
-            instructions: std::mem::replace(&mut func_ctx.curr_block.instructions, Vec::new()),
-            exit: BlockExit::Jump {
-                arg: ir::JumpArg::new(bid_end, Vec::new()),
-            },
-        };
-        func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
+        if func_ctx.blocks.get(&func_ctx.curr_block.bid).is_none() {
+            let block = ir::Block {
+                phinodes: std::mem::replace(&mut func_ctx.curr_block.phinodes, Vec::new()),
+                instructions: std::mem::replace(&mut func_ctx.curr_block.instructions, Vec::new()),
+                exit: BlockExit::Jump {
+                    arg: ir::JumpArg::new(bid_end, Vec::new()),
+                },
+            };
+            func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
+        }
         Ok(())
     }
 
@@ -1193,28 +1195,22 @@ impl Irgen {
                     width: operand.dtype().get_int_width().unwrap(),
                     is_signed: true,
                 });
-                let sub_instr = Instruction::BinOp {
-                    op: BinaryOperator::Plus,
-                    lhs: operand.clone(),
-                    rhs: one,
-                    dtype: operand.dtype().clone(),
-                };
-                func_ctx
-                    .curr_block
-                    .instructions
-                    .push(Named::new(None, sub_instr));
-
-                let iid = func_ctx.curr_block.instructions.len() - 1;
-                let rid = RegisterId::temp(func_ctx.curr_block.bid, iid);
-                let value = Operand::register(rid, operand.dtype().clone());
-                let store_instr = Instruction::Store {
-                    ptr: self.translate_expression_lvalue(&unary.operand.node, func_ctx)?,
-                    value: value.clone(),
-                };
-                func_ctx
-                    .curr_block
-                    .instructions
-                    .push(Named::new(None, store_instr));
+                let value = self.insert_instruction(
+                    ir::Instruction::BinOp {
+                        op: BinaryOperator::Plus,
+                        lhs: operand.clone(),
+                        rhs: one,
+                        dtype: operand.dtype().clone(),
+                    },
+                    func_ctx,
+                )?;
+                self.insert_instruction(
+                    ir::Instruction::Store {
+                        ptr: self.translate_expression_lvalue(&unary.operand.node, func_ctx)?,
+                        value: value.clone(),
+                    },
+                    func_ctx,
+                )?;
                 return Ok(operand.clone());
             }
             // UnaryOperator::PostDecrement => {}

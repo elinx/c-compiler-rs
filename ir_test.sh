@@ -1,17 +1,26 @@
 #!/bin/bash
 
 test_cases=(
+    fibonacci.c
     alignof.c
     array.c
     array2.c
     array3.c
+    simple_cond.c
+    simple_for.c
+    simple_if.c
+    simple.c
+    sizeof.c
+    pointer.c
+    return_void.c
+    logical_op.c
+    gcd.c
     array4.c
     array5.c
     bar.c
     bitwise.c
     cmp.c
     comma.c
-    complete_cond_gen.py
     complete_cond.c
     cond_and_loop.c
     cond.c
@@ -19,7 +28,6 @@ test_cases=(
     fib3.c
     fib4.c
     fib5.c
-    fibonacci.c
     float.c
     float2_gen.py
     float2.c
@@ -28,20 +36,11 @@ test_cases=(
     foo3.c
     foo4.c
     for_continue_break.c
-    gcd.c
     integer_literal.c
     integer_literal2.c
-    logical_op.c
     minus_constant.c
     negate.c
-    pointer.c
-    return_void.c
     shift.c
-    simple_cond.c
-    simple_for.c
-    simple_if.c
-    simple.c
-    sizeof.c
     struct.c
     struct2.c
     struct3.c
