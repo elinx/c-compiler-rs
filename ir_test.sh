@@ -21,36 +21,37 @@ test_cases=(
     logical_op.c
     gcd.c
     cmp.c
+    foo.c
+    foo2.c
+    foo3.c
+    unary.c
+    cond.c
+    test.c
+    typecast.c
+    temp.c
+    # complete!!!
+    negate.c
+    foo4.c
     array4.c
     array5.c
     bitwise.c
     comma.c
     complete_cond.c
     cond_and_loop.c
-    cond.c
     float.c
     float2_gen.py
     float2.c
-    foo.c
-    foo2.c
-    foo3.c
-    foo4.c
     for_continue_break.c
     integer_literal.c
     integer_literal2.c
     minus_constant.c
-    negate.c
     shift.c
     struct.c
     struct2.c
     struct3.c
     switch.c
-    temp.c
     temp2.c
-    test.c
-    typecast.c
     typedef.c
-    unary.c
     while_continue_break.c
 )
 
