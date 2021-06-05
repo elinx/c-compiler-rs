@@ -6,6 +6,7 @@ test_cases=(
     array2.c
     array3.c
     gcd.c
+    logical_op.c
     pointer.c
     return_void.c
     simple_for.c

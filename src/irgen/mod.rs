@@ -1215,7 +1215,7 @@ impl Irgen {
                     .curr_block
                     .instructions
                     .push(Named::new(None, store_instr));
-                return Ok(value.clone());
+                return Ok(operand.clone());
             }
             // UnaryOperator::PostDecrement => {}
             UnaryOperator::PreIncrement | UnaryOperator::PreDecrement => {
