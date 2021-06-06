@@ -1142,7 +1142,18 @@ impl Irgen {
             Expression::UnaryOperator(unary) => {
                 self.translate_unary_operator(&unary.deref().node, func_ctx)
             }
-            Expression::Cast(_) => todo!("cast"),
+            Expression::Cast(cast) => {
+                let type_name = &cast.deref().node.type_name.node;
+                let expr = &cast.deref().node.expression.node;
+                let operand = self.translate_expression_rvalue(expr, func_ctx)?;
+                let target_dtype = Dtype::try_from(type_name).map_err(|e| {
+                    IrgenError::new(
+                        cast.write_string(),
+                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                    )
+                })?;
+                self.translate_typecast(&operand, &target_dtype, func_ctx)
+            }
             Expression::BinaryOperator(bop) => {
                 self.translate_binary_operator(&bop.deref().node, func_ctx)
             }

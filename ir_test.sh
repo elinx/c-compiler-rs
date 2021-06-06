@@ -32,6 +32,7 @@ test_cases=(
     negate.c
     bitwise.c
     comma.c
+    shift.c
     # complete!!!
     foo4.c
     array4.c
@@ -39,13 +40,11 @@ test_cases=(
     complete_cond.c
     cond_and_loop.c
     float.c
-    float2_gen.py
     float2.c
     for_continue_break.c
     integer_literal.c
     integer_literal2.c
     minus_constant.c
-    shift.c
     struct.c
     struct2.c
     struct3.c
