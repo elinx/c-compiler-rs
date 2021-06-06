@@ -1149,7 +1149,23 @@ impl Irgen {
             Expression::Conditional(expr) => {
                 self.translate_conditional(&expr.deref().node, func_ctx)
             }
-            Expression::Comma(_) => todo!("comma"),
+            Expression::Comma(comma_expr) => {
+                let results: Result<Vec<_>, _> = comma_expr
+                    .deref()
+                    .iter()
+                    .map(|expr| self.translate_expression_rvalue(&expr.node, func_ctx))
+                    .collect();
+                Ok(results?
+                    .iter()
+                    .last()
+                    .ok_or(IrgenError::new(
+                        comma_expr.write_string(),
+                        IrgenErrorMessage::Misc {
+                            message: "comma expr get last expr error".to_owned(),
+                        },
+                    ))?
+                    .clone())
+            }
             Expression::OffsetOf(_) => todo!("offsetof"),
             Expression::VaArg(_) => todo!("vaarg"),
             Expression::Statement(_) => todo!("stmt"),

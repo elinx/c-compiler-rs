@@ -30,12 +30,12 @@ test_cases=(
     typecast.c
     temp.c
     negate.c
+    bitwise.c
+    comma.c
     # complete!!!
     foo4.c
     array4.c
     array5.c
-    bitwise.c
-    comma.c
     complete_cond.c
     cond_and_loop.c
     float.c
