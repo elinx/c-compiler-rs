@@ -29,8 +29,8 @@ test_cases=(
     test.c
     typecast.c
     temp.c
-    # complete!!!
     negate.c
+    # complete!!!
     foo4.c
     array4.c
     array5.c

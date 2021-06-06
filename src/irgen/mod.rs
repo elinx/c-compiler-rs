@@ -1365,20 +1365,20 @@ impl Irgen {
                 };
                 return Ok(operand.clone());
             }
-            // UnaryOperator::Plus => {}
-            UnaryOperator::Minus => {
+            UnaryOperator::Plus
+            | UnaryOperator::Minus
+            | UnaryOperator::Complement
+            | UnaryOperator::Negate => {
                 let operand = self.translate_expression_rvalue(&unary.operand.node, func_ctx)?;
-                return Ok(self.insert_instruction(
+                return self.insert_instruction(
                     ir::Instruction::UnaryOp {
                         op,
                         operand: operand.clone(),
                         dtype: operand.dtype().clone(),
                     },
                     func_ctx,
-                )?);
+                );
             }
-            // UnaryOperator::Complement => {}
-            // UnaryOperator::Negate => {}
             // UnaryOperator::SizeOf => {}
             _ => todo!("more unary operators"),
         }
