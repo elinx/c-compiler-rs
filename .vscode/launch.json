@@ -43,7 +43,7 @@
             },
             "args": [
                 "-i",
-                "examples/c/cmp.c"
+                "examples/c/foo4.c"
             ],
             "cwd": "${workspaceFolder}"
         },

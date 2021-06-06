@@ -401,7 +401,12 @@ impl Irgen {
                         .node
                         .parameters
                         .iter()
-                        .map(|p| p.node.declarator.as_ref().unwrap().node.kind.write_string())
+                        .map(|p| {
+                            p.node
+                                .declarator
+                                .as_ref()
+                                .map_or("".to_owned(), |decl| decl.node.kind.write_string())
+                        })
                         .collect::<Vec<_>>();
                 }
                 DerivedDeclarator::KRFunction(_) => {
