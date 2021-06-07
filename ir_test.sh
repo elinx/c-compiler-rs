@@ -33,25 +33,25 @@ test_cases=(
     bitwise.c
     comma.c
     shift.c
-    # complete!!!
     foo4.c
-    array4.c
-    array5.c
     complete_cond.c
     cond_and_loop.c
-    float.c
-    float2.c
-    for_continue_break.c
+    minus_constant.c
     integer_literal.c
     integer_literal2.c
-    minus_constant.c
+    for_continue_break.c
+    while_continue_break.c
+    # complete!!!
+    array4.c
+    array5.c
+    float.c
+    float2.c
     struct.c
     struct2.c
     struct3.c
     switch.c
     temp2.c
     typedef.c
-    while_continue_break.c
 )
 
 for test_case in "${test_cases[@]}"; do

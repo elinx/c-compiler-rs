@@ -389,7 +389,7 @@ impl Irgen {
         match &declarator.kind.node {
             DeclaratorKind::Abstract => "".to_owned(),
             DeclaratorKind::Identifier(id) => id.write_string(),
-            DeclaratorKind::Declarator(decl) => decl.write_string(),
+            DeclaratorKind::Declarator(decl) => self.name_of_declarator(&decl.deref().node),
         }
     }
 
@@ -476,11 +476,13 @@ impl Irgen {
         std::mem::replace(&mut func_ctx.curr_block, BBContext::new(then_bid));
         let then_expr = &expr.then_expression.deref().node;
         let then_operand = self.translate_expression_rvalue(then_expr, func_ctx)?;
+        let then_exit_bid = func_ctx.curr_block.bid; // exit bid of exit block may not then_bid
         self.insert_jump_block(exit_bid, func_ctx)?;
 
         std::mem::replace(&mut func_ctx.curr_block, BBContext::new(else_bid));
         let else_expr = &expr.else_expression.deref().node;
         let else_operand = self.translate_expression_rvalue(else_expr, func_ctx)?;
+        let else_exit_bid = func_ctx.curr_block.bid;
         self.insert_jump_block(exit_bid, func_ctx)?;
 
         let dtype = self.translate_merge_type(&then_operand.dtype(), &else_operand.dtype())?;
@@ -489,7 +491,7 @@ impl Irgen {
         // store result from then/else to result
         func_ctx
             .blocks
-            .get_mut(&then_bid)
+            .get_mut(&then_exit_bid)
             .unwrap()
             .instructions
             .push(Named::new(
@@ -501,7 +503,7 @@ impl Irgen {
             ));
         func_ctx
             .blocks
-            .get_mut(&else_bid)
+            .get_mut(&else_exit_bid)
             .unwrap()
             .instructions
             .push(Named::new(
@@ -1193,10 +1195,8 @@ impl Irgen {
         call: &CallExpression,
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
-        // TODO: chain all the following statements
-        let func_type = func_ctx
-            .lookup_symbol_table(call.callee.deref().write_string())?
-            .dtype();
+        let callee = self.translate_expression_rvalue(&call.callee.deref().node, func_ctx)?;
+        let func_type = callee.dtype();
         // function dtype is wrapped into a pointer dtype, so need to
         // unwrap pointer type first
         let func_type = func_type
@@ -1231,7 +1231,6 @@ impl Irgen {
 
         log::debug!("call expression return type: {:?}", func_type);
         let return_type = func_type.0;
-        let callee = self.translate_expression_rvalue(&call.callee.deref().node, func_ctx)?;
         self.insert_instruction(
             ir::Instruction::Call {
                 callee,

@@ -101,7 +101,7 @@ pub fn test_irgen(path: &Path) {
 
     let mut ir = Irgen::default()
         .translate(&unit)
-        .unwrap_or_else(|irgen_error| panic!("{}", irgen_error));
+        .unwrap_or_else(|irgen_error| panic!("{:#?}", irgen_error));
 
     let rand_num = rand::thread_rng().gen_range(1, 100);
     let new_c = modify_c(path, rand_num);
