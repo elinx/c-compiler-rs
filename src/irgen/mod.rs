@@ -73,6 +73,8 @@ struct FunctionContext {
     // typedefs
     symbol_table: Vec<HashMap<String, Operand>>,
     curr_block: BBContext,
+
+    bc_stack: Vec<(BlockId, BlockId)>,
 }
 
 impl FunctionContext {
@@ -85,6 +87,7 @@ impl FunctionContext {
             tempid_counter: 0,
             symbol_table: vec![global],
             curr_block: BBContext::new(BlockId(0)),
+            bc_stack: Vec::new(),
         }
     }
 
@@ -648,6 +651,7 @@ impl Irgen {
                 let cond_bid = func_ctx.alloc_bid();
                 let body_bid = func_ctx.alloc_bid();
                 let exit_bid = func_ctx.alloc_bid();
+                func_ctx.bc_stack.push((exit_bid, cond_bid));
 
                 // cond block
                 self.insert_jump_block(cond_bid, func_ctx)?;
@@ -658,6 +662,7 @@ impl Irgen {
                 std::mem::replace(&mut func_ctx.curr_block, BBContext::new(body_bid));
                 self.translate_stmt(statement, func_ctx)?;
                 self.insert_jump_block(cond_bid, func_ctx)?;
+                func_ctx.bc_stack.pop();
 
                 // exit block
                 std::mem::replace(&mut func_ctx.curr_block, BBContext::new(exit_bid));
@@ -668,11 +673,13 @@ impl Irgen {
                 let body_bid = func_ctx.alloc_bid();
                 let cond_bid = func_ctx.alloc_bid();
                 let exit_bid = func_ctx.alloc_bid();
+                func_ctx.bc_stack.push((exit_bid, cond_bid));
 
                 // body block
                 self.insert_jump_block(body_bid, func_ctx)?;
                 std::mem::replace(&mut func_ctx.curr_block, BBContext::new(body_bid));
                 self.translate_stmt(body, func_ctx)?;
+                func_ctx.bc_stack.pop();
 
                 // condition block
                 self.insert_jump_block(cond_bid, func_ctx)?;
@@ -688,6 +695,7 @@ impl Irgen {
                 let body_bid = func_ctx.alloc_bid();
                 let step_bid = func_ctx.alloc_bid();
                 let exit_bid = func_ctx.alloc_bid();
+                func_ctx.bc_stack.push((exit_bid, step_bid));
 
                 // initializer in a seperate block
                 self.insert_jump_block(init_bid, func_ctx)?;
@@ -698,30 +706,50 @@ impl Irgen {
                     cond_bid,
                     func_ctx,
                 )?;
+
+                // condition block
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(cond_bid));
                 if let Some(ref cond) = for_stmt.node.condition {
-                    std::mem::replace(&mut func_ctx.curr_block, BBContext::new(cond_bid));
                     self.translate_condition(&cond.deref().node, body_bid, exit_bid, func_ctx)?;
-
-                    std::mem::replace(&mut func_ctx.curr_block, BBContext::new(body_bid));
-                    self.translate_stmt(&for_stmt.node.statement.deref().node, func_ctx)?;
-
-                    if let Some(step) = &for_stmt.node.step {
-                        self.insert_jump_block(step_bid, func_ctx)?;
-                        std::mem::replace(&mut func_ctx.curr_block, BBContext::new(step_bid));
-                        self.translate_expression_rvalue(&step.deref().node, func_ctx)?;
-                        self.insert_jump_block(cond_bid, func_ctx)?;
-                    } else {
-                        self.insert_jump_block(cond_bid, func_ctx)?;
-                    }
-                } else {
-                    self.insert_jump_block(exit_bid, func_ctx)?;
                 }
+                self.insert_jump_block(body_bid, func_ctx)?;
+
+                // body block
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(body_bid));
+                self.translate_stmt(&for_stmt.node.statement.deref().node, func_ctx)?;
+                self.insert_jump_block(step_bid, func_ctx)?;
+
+                // step block
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(step_bid));
+                if let Some(step) = &for_stmt.node.step {
+                    self.translate_expression_rvalue(&step.deref().node, func_ctx)?;
+                }
+                self.insert_jump_block(cond_bid, func_ctx)?;
+                func_ctx.bc_stack.pop();
                 func_ctx.exit_scope();
+                // exit block
                 std::mem::replace(&mut func_ctx.curr_block, BBContext::new(exit_bid));
             }
             Statement::Goto(_) => todo!("goto"),
-            Statement::Continue => todo!("continue"),
-            Statement::Break => todo!("break"),
+            Statement::Continue | Statement::Break => {
+                let exit_bid = func_ctx.alloc_bid();
+                let bid = if let Some((break_bid, continue_bid)) = func_ctx.bc_stack.last() {
+                    if matches!(statement, Statement::Break) {
+                        break_bid
+                    } else {
+                        continue_bid
+                    }
+                } else {
+                    return Err(IrgenError::new(
+                        "break/continue statement".to_owned(),
+                        IrgenErrorMessage::Misc {
+                            message: "invlaid lhs value for index".to_owned(),
+                        },
+                    ));
+                };
+                self.insert_jump_block(*bid, func_ctx)?;
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(exit_bid));
+            }
             Statement::Return(return_stmt) => {
                 if let Some(expr) = return_stmt {
                     log::debug!("handing return expression: {:?}", &func_ctx);
