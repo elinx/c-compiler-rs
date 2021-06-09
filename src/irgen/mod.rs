@@ -1,3 +1,4 @@
+use core::f64;
 use core::{fmt, panic};
 use std::cmp;
 use std::mem;
@@ -450,11 +451,23 @@ impl Irgen {
         func_ctx: &mut FunctionContext,
     ) -> Result<Operand, IrgenError> {
         if condition.dtype() != Dtype::BOOL {
+            let rhs = if matches!(condition.dtype(), Dtype::Int{..}) {
+                Operand::Constant(ir::Constant::int(0 as u128, condition.dtype().clone()))
+            } else if matches!(condition.dtype(), Dtype::Float{..}) {
+                Operand::Constant(ir::Constant::float(0 as f64, condition.dtype().clone()))
+            } else {
+                return Err(IrgenError::new(
+                    "cannot convert to bool".to_owned(),
+                    IrgenErrorMessage::Misc {
+                        message: "cannot convert to bool".to_owned(),
+                    },
+                ));
+            };
             self.insert_instruction(
                 ir::Instruction::BinOp {
                     op: BinaryOperator::NotEquals,
                     lhs: condition.clone(),
-                    rhs: Operand::Constant(ir::Constant::int(0 as u128, condition.dtype().clone())),
+                    rhs,
                     dtype: Dtype::BOOL,
                 },
                 func_ctx,
@@ -1651,23 +1664,12 @@ impl Irgen {
         let rhs = self.translate_expression_rvalue(&binary.rhs.node, func_ctx)?;
         log::debug!("op: {:?}\n lhs: {:?}\n rhs: {:?}\n", op, lhs, rhs);
 
-        // let target_dtype = match op {
-        //     BinaryOperator::Less
-        //     | BinaryOperator::Greater
-        //     | BinaryOperator::LessOrEqual
-        //     | BinaryOperator::GreaterOrEqual
-        //     | BinaryOperator::Equals
-        //     | BinaryOperator::NotEquals
-        //     | BinaryOperator::LogicalAnd
-        //     | BinaryOperator::LogicalOr => Dtype::INT,
-        //     _ => self.translate_merge_type(&lhs.dtype(), &rhs.dtype())?,
-        // };
         let target_dtype = self.translate_merge_type(&lhs.dtype(), &rhs.dtype())?;
         log::debug!("merged dtype: {:?}", target_dtype);
 
         let lhs = self.translate_typecast(&lhs, &target_dtype, func_ctx)?;
         let rhs = self.translate_typecast(&rhs, &target_dtype, func_ctx)?;
-        let instr_dtype = self.data_width_postprocess(&target_dtype, &op);
+        let instr_dtype = self.convert_to_bool(&target_dtype, &op);
         let instr = Instruction::BinOp {
             op,
             lhs,
@@ -1689,25 +1691,16 @@ impl Irgen {
         Ok(operand)
     }
 
-    fn data_width_postprocess(&self, dtype: &Dtype, op: &BinaryOperator) -> Dtype {
-        if let Dtype::Int { is_const, .. } = dtype {
-            match op {
-                BinaryOperator::Less
-                | BinaryOperator::Greater
-                | BinaryOperator::LessOrEqual
-                | BinaryOperator::GreaterOrEqual
-                | BinaryOperator::Equals
-                | BinaryOperator::NotEquals => {
-                    return Dtype::Int {
-                        width: 1,
-                        is_const: *is_const,
-                        is_signed: false,
-                    }
-                }
-                _ => return dtype.clone(),
-            }
+    fn convert_to_bool(&self, dtype: &Dtype, op: &BinaryOperator) -> Dtype {
+        match op {
+            BinaryOperator::Less
+            | BinaryOperator::Greater
+            | BinaryOperator::LessOrEqual
+            | BinaryOperator::GreaterOrEqual
+            | BinaryOperator::Equals
+            | BinaryOperator::NotEquals => Dtype::BOOL,
+            _ => dtype.clone(),
         }
-        dtype.clone()
     }
 
     fn translate_merge_type(&self, lhs: &Dtype, rhs: &Dtype) -> Result<Dtype, IrgenError> {
@@ -1762,7 +1755,9 @@ impl Irgen {
                     is_const: *l_is_const && *r_is_const,
                 })
             }
-            // (Dtype::Int { width, is_signed, is_const }, Dtype::Float { width, is_const }) => {}
+            (Dtype::Int { .. }, Dtype::Float { .. })
+            | (Dtype::Float { .. }, Dtype::Int { .. })
+            | (Dtype::Float { .. }, Dtype::Float { .. }) => Ok(Dtype::DOUBLE),
             // (Dtype::Int { width, is_signed, is_const }, Dtype::Pointer { inner, is_const }) => {}
             // (Dtype::Int { width, is_signed, is_const }, Dtype::Array { inner, size }) => {}
             // (Dtype::Int { width, is_signed, is_const }, Dtype::Struct { name, fields, is_const, size_align_offsets }) => {}
