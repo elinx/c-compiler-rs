@@ -1295,7 +1295,41 @@ impl Irgen {
         match op {
             UnaryOperator::PostIncrement => {
                 let operand = self.translate_expression_rvalue(&unary.operand.node, func_ctx)?;
-                log::debug!("operand: {:?}", operand);
+                let operand_ptr =
+                    self.translate_expression_lvalue(&unary.operand.node, func_ctx)?;
+                // println!("operand: {:?}", operand);
+                if let Some(inner) = operand.dtype().get_pointer_inner() {
+                    let inner_size = inner
+                        .deref()
+                        .size_align_of(&HashMap::new())
+                        .map_err(|e| {
+                            IrgenError::new(
+                                unary.write_string(),
+                                IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                            )
+                        })?
+                        .0;
+
+                    let result = self.insert_instruction(
+                        ir::Instruction::GetElementPtr {
+                            ptr: operand.clone(),
+                            offset: Operand::Constant(ir::Constant::int(
+                                inner_size as u128,
+                                Dtype::LONGLONG,
+                            )),
+                            dtype: Box::new(operand.dtype().clone()),
+                        },
+                        func_ctx,
+                    )?;
+                    self.insert_instruction(
+                        ir::Instruction::Store {
+                            ptr: operand_ptr,
+                            value: result,
+                        },
+                        func_ctx,
+                    )?;
+                    return Ok(operand);
+                }
                 let one = Operand::constant(ir::Constant::Int {
                     value: 1,
                     width: operand.dtype().get_int_width().unwrap(),
@@ -1312,7 +1346,7 @@ impl Irgen {
                 )?;
                 self.insert_instruction(
                     ir::Instruction::Store {
-                        ptr: self.translate_expression_lvalue(&unary.operand.node, func_ctx)?,
+                        ptr: operand_ptr,
                         value: value.clone(),
                     },
                     func_ctx,
