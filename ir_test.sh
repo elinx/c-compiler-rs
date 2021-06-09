@@ -43,9 +43,9 @@ test_cases=(
     while_continue_break.c
     float.c
     float2.c
-    # complete!!!
     array4.c
     array5.c
+    # complete!!!
     struct.c
     struct2.c
     struct3.c

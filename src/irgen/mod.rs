@@ -838,7 +838,7 @@ impl Irgen {
 
             // translate initializer
             if let Some(ref initializer) = declarator.node.initializer {
-                match initializer.node {
+                match &initializer.node {
                     Initializer::Expression(ref expr) => {
                         let operand =
                             self.translate_expression_rvalue(&expr.deref().node, func_ctx)?;
@@ -852,7 +852,26 @@ impl Irgen {
                             .instructions
                             .push(Named::new(None, instr));
                     }
-                    Initializer::List(_) => unimplemented!("list initializer"),
+                    Initializer::List(initializers) => {
+                        for (index, initializer) in initializers.iter().enumerate() {
+                            let initializer = &initializer.node.initializer.deref().node;
+                            let initializer = match initializer {
+                                Initializer::Expression(expr) => &expr.deref().node,
+                                Initializer::List(_) => todo!(),
+                            };
+                            let value = self.translate_expression_rvalue(initializer, func_ctx)?;
+                            let index = Operand::Constant(ir::Constant::int(
+                                index as u128,
+                                ir::Dtype::LONGLONG,
+                            ));
+                            let ptr =
+                                self.translate_index_op_inner(ptr.clone(), index, func_ctx)?;
+                            self.insert_instruction(
+                                ir::Instruction::Store { ptr, value },
+                                func_ctx,
+                            )?;
+                        }
+                    }
                 }
             }
         }
