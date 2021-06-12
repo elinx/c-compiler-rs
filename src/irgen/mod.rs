@@ -690,7 +690,96 @@ impl Irgen {
                 let end_contex = BBContext::new(bid_end);
                 std::mem::replace(&mut func_ctx.curr_block, end_contex);
             }
-            Statement::Switch(_) => todo!("switch"),
+            Statement::Switch(switch_stmt) => {
+                let cond = &switch_stmt.node.expression.deref().node;
+                let body = &switch_stmt.node.statement.deref().node;
+                let exit_bid = func_ctx.alloc_bid();
+                func_ctx.bc_stack.push((exit_bid, BlockId(0)));
+                // println!("switch stmt\n  cond: {:#?}\n body: {:#?}", cond, body);
+
+                let cond_context =
+                    std::mem::replace(&mut func_ctx.curr_block, BBContext::new(exit_bid));
+
+                let mut cases = Vec::new();
+                let mut default = Box::new(ir::JumpArg::new(exit_bid, Vec::new()));
+                match body {
+                    Statement::Compound(blocks) => {
+                        for block in blocks {
+                            if let BlockItem::Statement(statement) = block.node.clone() {
+                                match statement.node {
+                                    Statement::Labeled(label_stmt) => {
+                                        let label = label_stmt.node.label.node;
+                                        let statement =
+                                            label_stmt.node.statement.deref().node.clone();
+                                        match label {
+                                            Label::Identifier(_) => {
+                                                todo!("ident: ... not supported")
+                                            }
+                                            Label::Case(expr) => {
+                                                let case_bid = func_ctx.alloc_bid();
+                                                let operand = self.translate_expression_rvalue(
+                                                    &expr.deref().node,
+                                                    func_ctx,
+                                                )?;
+                                                let operand =
+                                                    operand.get_constant().unwrap().clone();
+                                                cases.push((
+                                                    operand,
+                                                    ir::JumpArg::new(case_bid, Vec::new()),
+                                                ));
+                                                std::mem::replace(
+                                                    &mut func_ctx.curr_block,
+                                                    BBContext::new(case_bid),
+                                                );
+                                                self.translate_stmt(&statement, func_ctx)?;
+                                            }
+                                            Label::Default => {
+                                                let default_bid = func_ctx.alloc_bid();
+                                                default = Box::new(ir::JumpArg::new(
+                                                    default_bid,
+                                                    Vec::new(),
+                                                ));
+                                                std::mem::replace(
+                                                    &mut func_ctx.curr_block,
+                                                    BBContext::new(default_bid),
+                                                );
+                                                self.translate_stmt(&statement, func_ctx)?;
+                                            }
+                                        }
+                                    }
+                                    _ => panic!("switch body not started by label statement error"),
+                                }
+                            } else {
+                                panic!("switch body compound is not statement")
+                            }
+                        }
+                    }
+                    _ => panic!("switch statement body not compund satements error"),
+                }
+
+                std::mem::replace(&mut func_ctx.curr_block, cond_context);
+                let value = self.translate_expression_rvalue(&cond, func_ctx)?;
+                let exit = BlockExit::Switch {
+                    value,
+                    default,
+                    cases,
+                };
+                let block = ir::Block {
+                    phinodes: std::mem::replace(&mut func_ctx.curr_block.phinodes, Vec::new()),
+                    instructions: std::mem::replace(
+                        &mut func_ctx.curr_block.instructions,
+                        Vec::new(),
+                    ),
+                    exit,
+                };
+                func_ctx.blocks.insert(func_ctx.curr_block.bid, block);
+
+                func_ctx.enter_scope();
+                func_ctx.bc_stack.pop();
+                func_ctx.exit_scope();
+                // exit block
+                std::mem::replace(&mut func_ctx.curr_block, BBContext::new(exit_bid));
+            }
             Statement::While(while_stmt) => {
                 let cond = &while_stmt.node.expression.deref().node;
                 let statement = &while_stmt.node.statement.deref().node;

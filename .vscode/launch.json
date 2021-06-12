@@ -43,7 +43,7 @@
             },
             "args": [
                 "-i",
-                "examples/c/foo4.c"
+                "examples/c/switch.c"
             ],
             "cwd": "${workspaceFolder}"
         },

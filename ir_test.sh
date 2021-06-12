@@ -46,11 +46,11 @@ test_cases=(
     array4.c
     array5.c
     typedef.c
+    switch.c
     # complete!!!
     struct.c
     struct2.c
     struct3.c
-    switch.c
     temp2.c
 )
 
