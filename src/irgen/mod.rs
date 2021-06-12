@@ -20,6 +20,8 @@ use crate::{ir::DtypeError, ir::FunctionSignature, write_base::WriteString};
 #[derive(Default)]
 pub struct Irgen {
     decls: BTreeMap<String, ir::Declaration>,
+    typedefs: HashMap<String, Dtype>,
+    structs: HashMap<String, Option<Dtype>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -65,27 +67,32 @@ impl fmt::Display for IrgenError {
     }
 }
 #[derive(Debug)]
-struct FunctionContext {
+struct FunctionContext<'a> {
     return_dtype: Dtype,
     allocations: Vec<Named<Dtype>>,
     blocks: BTreeMap<ir::BlockId, ir::Block>,
     bid_counter: usize,
     tempid_counter: usize,
-    // typedefs
+    typedefs: &'a HashMap<String, Dtype>,
     symbol_table: Vec<HashMap<String, Operand>>,
     curr_block: BBContext,
 
     bc_stack: Vec<(BlockId, BlockId)>,
 }
 
-impl FunctionContext {
-    fn new(ret_dtype: Dtype, global: HashMap<String, Operand>) -> Self {
+impl<'a> FunctionContext<'a> {
+    fn new(
+        ret_dtype: Dtype,
+        global: HashMap<String, Operand>,
+        typedefs: &'a HashMap<String, Dtype>,
+    ) -> Self {
         Self {
             return_dtype: ret_dtype,
             allocations: Vec::new(),
             blocks: BTreeMap::new(),
             bid_counter: 1, // 0 is used by init block by default
             tempid_counter: 0,
+            typedefs,
             symbol_table: vec![global],
             curr_block: BBContext::new(BlockId(0)),
             bc_stack: Vec::new(),
@@ -219,7 +226,7 @@ impl Irgen {
             let initializer = declarator.node.initializer.as_ref();
             let declarator = &declarator.node.declarator.node;
             let name = self.name_of_declarator(&declarator);
-            let dtype = base_dtype
+            let mut dtype = base_dtype
                 .clone()
                 .with_ast_declarator(&declarator)
                 .map_err(|e| {
@@ -230,6 +237,19 @@ impl Irgen {
                 })?
                 .deref()
                 .clone();
+
+            if is_typedef {
+                dtype = dtype
+                    .resolve_typedefs(&self.typedefs, &self.structs)
+                    .map_err(|e| {
+                        IrgenError::new(
+                            decl.write_string(),
+                            IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                        )
+                    })?;
+                self.typedefs.insert(name, dtype);
+                continue;
+            }
 
             let initializer = if let Some(init) = initializer {
                 Some(init.node.clone())
@@ -296,7 +316,8 @@ impl Irgen {
 
         let signature = FunctionSignature::new(func_dtype.clone());
         let ret_dtype = func_dtype.get_function_inner().unwrap().0.clone();
-        let mut func_ctx = FunctionContext::new(ret_dtype.clone(), global_symbol_table);
+        let mut func_ctx =
+            FunctionContext::new(ret_dtype.clone(), global_symbol_table, &self.typedefs);
 
         let params_name = self.params_name_of_declarator(declarator);
         func_ctx.enter_scope();
@@ -360,6 +381,18 @@ impl Irgen {
             .iter()
             .zip(params_name.iter())
             .for_each(|(dtype, name)| {
+                let dtype = dtype
+                    .clone()
+                    .resolve_typedefs(&self.typedefs, &self.structs)
+                    .unwrap();
+                // TODO: how to use try_for_each
+                // .map_err(|e| {
+                //     IrgenError::new(
+                //         "resolve typedefs error".to_owned(),
+                //         IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                //     )
+                // })?;
+
                 let allocation = Named::new(Some(name.clone()), dtype.clone());
                 func_ctx.allocations.push(allocation);
                 let aid = func_ctx.allocations.len() - 1;
@@ -828,6 +861,15 @@ impl Irgen {
                     )
                 })?;
             let dtype = dtype.deref();
+            let dtype = dtype
+                .clone()
+                .resolve_typedefs(&self.typedefs, &self.structs)
+                .map_err(|e| {
+                    IrgenError::new(
+                        "resolve typedefs error".to_owned(),
+                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                    )
+                })?;
 
             let allocation = Named::new(Some(name.clone()), dtype.clone());
             func_ctx.allocations.push(allocation);
@@ -892,6 +934,14 @@ impl Irgen {
             operand,
             target_dtype
         );
+
+        // pointer type don't need to be casted
+        if operand.dtype().get_pointer_inner().is_some()
+            && target_dtype.get_pointer_inner().is_some()
+        {
+            return Ok(operand.clone());
+        }
+
         // convert to target format, like `u64 0` to `u8 0`
         if operand.dtype() == target_dtype.clone() {
             log::debug!("typecast skip");

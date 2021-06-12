@@ -45,13 +45,13 @@ test_cases=(
     float2.c
     array4.c
     array5.c
+    typedef.c
     # complete!!!
     struct.c
     struct2.c
     struct3.c
     switch.c
     temp2.c
-    typedef.c
 )
 
 for test_case in "${test_cases[@]}"; do
