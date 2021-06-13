@@ -43,7 +43,7 @@
             },
             "args": [
                 "-i",
-                "examples/c/switch.c"
+                "examples/c/struct.c"
             ],
             "cwd": "${workspaceFolder}"
         },
@@ -84,7 +84,13 @@
                     "kind": "bin"
                 }
             },
-            "args": [],
+            "sourceMap": {
+                "/rustc/49cae55760da0a43428eba73abcb659bb70cf2e4": "${env:HOME}/.rustup/toolchains/1.44.0-x86_64-unknown-linux-gnu/lib/rustlib/src/rust"
+            },
+            "args": [
+                "-i",
+                "examples/c/struct.c"
+            ],
             "cwd": "${workspaceFolder}"
         },
         {

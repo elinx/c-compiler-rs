@@ -67,24 +67,24 @@ impl fmt::Display for IrgenError {
     }
 }
 #[derive(Debug)]
-struct FunctionContext<'a> {
+struct FunctionContext {
     return_dtype: Dtype,
     allocations: Vec<Named<Dtype>>,
     blocks: BTreeMap<ir::BlockId, ir::Block>,
     bid_counter: usize,
     tempid_counter: usize,
-    typedefs: &'a HashMap<String, Dtype>,
+    // typedefs: &'a HashMap<String, Dtype>,
     symbol_table: Vec<HashMap<String, Operand>>,
     curr_block: BBContext,
 
     bc_stack: Vec<(BlockId, BlockId)>,
 }
 
-impl<'a> FunctionContext<'a> {
+impl FunctionContext {
     fn new(
         ret_dtype: Dtype,
         global: HashMap<String, Operand>,
-        typedefs: &'a HashMap<String, Dtype>,
+        // typedefs: &'a HashMap<String, Dtype>,
     ) -> Self {
         Self {
             return_dtype: ret_dtype,
@@ -92,7 +92,7 @@ impl<'a> FunctionContext<'a> {
             blocks: BTreeMap::new(),
             bid_counter: 1, // 0 is used by init block by default
             tempid_counter: 0,
-            typedefs,
+            // typedefs,
             symbol_table: vec![global],
             curr_block: BBContext::new(BlockId(0)),
             bc_stack: Vec::new(),
@@ -200,10 +200,9 @@ impl Translate<TranslationUnit> for Irgen {
                 }
             }
         }
-        let decls = mem::replace(&mut self.decls, BTreeMap::new());
         Ok(Self::Target {
-            decls,
-            structs: HashMap::new(),
+            decls: mem::replace(&mut self.decls, BTreeMap::new()),
+            structs: mem::replace(&mut self.structs, HashMap::new()),
         })
     }
 }
@@ -247,9 +246,25 @@ impl Irgen {
                             IrgenErrorMessage::InvalidDtype { dtype_error: e },
                         )
                     })?;
+                let dtype = dtype
+                    .resolve_structs(&mut self.structs, &mut 0)
+                    .map_err(|e| {
+                        IrgenError::new(
+                            "resolve structs error".to_owned(),
+                            IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                        )
+                    })?;
                 self.typedefs.insert(name, dtype);
                 continue;
             }
+            let dtype = dtype
+                .resolve_structs(&mut self.structs, &mut 0)
+                .map_err(|e| {
+                    IrgenError::new(
+                        "resolve structs error".to_owned(),
+                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                    )
+                })?;
 
             let initializer = if let Some(init) = initializer {
                 Some(init.node.clone())
@@ -316,8 +331,7 @@ impl Irgen {
 
         let signature = FunctionSignature::new(func_dtype.clone());
         let ret_dtype = func_dtype.get_function_inner().unwrap().0.clone();
-        let mut func_ctx =
-            FunctionContext::new(ret_dtype.clone(), global_symbol_table, &self.typedefs);
+        let mut func_ctx = FunctionContext::new(ret_dtype.clone(), global_symbol_table);
 
         let params_name = self.params_name_of_declarator(declarator);
         func_ctx.enter_scope();
@@ -612,7 +626,7 @@ impl Irgen {
     }
 
     fn translate_for_initializer(
-        &self,
+        &mut self,
         init: &ForInitializer,
         cond_bid: BlockId,
         func_ctx: &mut FunctionContext,
@@ -631,7 +645,7 @@ impl Irgen {
     }
 
     fn translate_stmt(
-        &self,
+        &mut self,
         statement: &Statement,
         func_ctx: &mut FunctionContext,
     ) -> Result<(), IrgenError> {
@@ -909,7 +923,7 @@ impl Irgen {
     }
 
     fn translate_block_item(
-        &self,
+        &mut self,
         block_item: &BlockItem,
         func_ctx: &mut FunctionContext,
     ) -> Result<(), IrgenError> {
@@ -926,7 +940,7 @@ impl Irgen {
     }
 
     fn translate_declaration(
-        &self,
+        &mut self,
         decl: &Declaration,
         func_ctx: &mut FunctionContext,
     ) -> Result<(), IrgenError> {
@@ -1221,7 +1235,16 @@ impl Irgen {
                     func_ctx,
                 );
             }
-            Dtype::Struct { .. } => todo!(),
+            Dtype::Struct { .. } => {
+                return self.insert_instruction(
+                    ir::Instruction::GetElementPtr {
+                        ptr: base.clone(),
+                        offset: index.clone(),
+                        dtype: Box::new(base.dtype().clone()),
+                    },
+                    func_ctx,
+                );
+            }
             _ => panic!("invalid lhs value dtype"),
         };
     }
@@ -1259,7 +1282,43 @@ impl Irgen {
                 }),
             Expression::StringLiteral(_) => todo!("string literal"),
             Expression::GenericSelection(_) => todo!("generic selection"),
-            Expression::Member(_) => todo!("member"),
+            Expression::Member(member_expr) => {
+                let _op = &member_expr.deref().node.operator.node;
+                let expression = &member_expr.deref().node.expression.deref().node;
+                let identifier = &member_expr.deref().node.identifier.node.name;
+
+                let base = self.translate_expression_lvalue(expression, func_ctx)?;
+                // dbg!(&base);
+                let (offset, dtype) = base
+                    .dtype()
+                    .get_pointer_inner()
+                    .ok_or(IrgenError::new(
+                        member_expr.write_string(),
+                        IrgenErrorMessage::Misc {
+                            message: "not a struct pointer".to_owned(),
+                        },
+                    ))?
+                    .get_offset_struct_field(identifier, &self.structs)
+                    .ok_or(IrgenError::new(
+                        member_expr.write_string(),
+                        IrgenErrorMessage::Misc {
+                            message: "get field offset error".to_owned(),
+                        },
+                    ))?;
+                let dtype = Dtype::pointer(dtype);
+                // dbg!(&offset, &dtype);
+
+                let index =
+                    Operand::Constant(ir::Constant::int(offset as u128, ir::Dtype::LONGLONG));
+                self.insert_instruction(
+                    ir::Instruction::GetElementPtr {
+                        ptr: base,
+                        offset: index,
+                        dtype: Box::new(dtype),
+                    },
+                    func_ctx,
+                )
+            }
             Expression::Call(call) => self.translate_call_expression(&call.deref().node, func_ctx),
             Expression::CompoundLiteral(_) => todo!("compound literal"),
             Expression::SizeOf(_) => todo!("sizeof"),
@@ -1319,7 +1378,43 @@ impl Irgen {
                 }),
             Expression::StringLiteral(_) => todo!("string literal"),
             Expression::GenericSelection(_) => todo!("generic selection"),
-            Expression::Member(_) => todo!("member"),
+            Expression::Member(member_expr) => {
+                let _op = &member_expr.deref().node.operator.node;
+                let expression = &member_expr.deref().node.expression.deref().node;
+                let identifier = &member_expr.deref().node.identifier.node.name;
+
+                let base = self.translate_expression_lvalue(expression, func_ctx)?;
+                // dbg!(&base);
+                let (offset, dtype) = base
+                    .dtype()
+                    .get_pointer_inner()
+                    .ok_or(IrgenError::new(
+                        member_expr.write_string(),
+                        IrgenErrorMessage::Misc {
+                            message: "not a struct pointer".to_owned(),
+                        },
+                    ))?
+                    .get_offset_struct_field(identifier, &self.structs)
+                    .ok_or(IrgenError::new(
+                        member_expr.write_string(),
+                        IrgenErrorMessage::Misc {
+                            message: "get field offset error".to_owned(),
+                        },
+                    ))?;
+                let dtype = Dtype::pointer(dtype);
+                // dbg!(&offset, &dtype);
+
+                let index =
+                    Operand::Constant(ir::Constant::int(offset as u128, ir::Dtype::LONGLONG));
+                self.insert_instruction(
+                    ir::Instruction::GetElementPtr {
+                        ptr: base,
+                        offset: index,
+                        dtype: Box::new(dtype),
+                    },
+                    func_ctx,
+                )
+            }
             Expression::Call(call) => self.translate_call_expression(&call.deref().node, func_ctx),
             Expression::CompoundLiteral(_) => todo!("compound literal"),
             Expression::SizeOf(expr) | Expression::AlignOf(expr) => {
@@ -1423,6 +1518,49 @@ impl Irgen {
             .map(|(arg, param_dtype)| {
                 let argument = &arg.node;
                 self.translate_expression_rvalue(&argument, func_ctx)
+                    .and_then(|arg| {
+                        // array decay automaticly, no need to explicitly typecast
+                        // Pointer{Array{Int}} -> Pointer{Int}
+                        // Pointer{Array{Array{Int}}} -> Pointer{Array{Int}}
+
+                        // TODO: chain together the following statements?
+                        // let a = arg.dtype()
+                        //     .get_pointer_inner()
+                        //     .ok_or_else(||arg)
+                        //     .and_then(|d| {
+                        //         // d.get_array_inner()
+                        //         //     .and_then(|d| {
+                        //         //         let index = Operand::Constant(ir::Constant::int(
+                        //         //             0 as u128,
+                        //         //             ir::Dtype::LONGLONG,
+                        //         //         ));
+                        //         //         self.translate_index_op_inner(arg.clone(), index, func_ctx)
+                        //         //     })
+                        //         //     .or_else(|| Ok(arg.clone()))
+                        //         Ok(d)
+                        //     })
+                        //     .or_else(|| Ok(arg))
+
+                        if arg.dtype().get_pointer_inner().is_some() {
+                            if arg
+                                .dtype()
+                                .get_pointer_inner()
+                                .unwrap()
+                                .get_array_inner()
+                                .is_some()
+                            {
+                                let index = Operand::Constant(ir::Constant::int(
+                                    0 as u128,
+                                    ir::Dtype::LONGLONG,
+                                ));
+                                self.translate_index_op_inner(arg.clone(), index, func_ctx)
+                            } else {
+                                Ok(arg)
+                            }
+                        } else {
+                            Ok(arg)
+                        }
+                    })
                     .and_then(|arg| self.translate_typecast(&arg, param_dtype, func_ctx))
             })
             .collect();
@@ -2121,15 +2259,16 @@ impl Irgen {
         if let Some(ptr_dtype) = operand.dtype().get_pointer_inner() {
             // Can not load `Pointer{Array{Int}}` directly into a register, use
             // GET unwrap instead.
-            if let Some(inner_dtype) = ptr_dtype.get_array_inner() {
-                return self.insert_instruction(
-                    ir::Instruction::GetElementPtr {
-                        ptr: operand.clone(),
-                        offset: Operand::Constant(ir::Constant::int(0, Dtype::INT)),
-                        dtype: Box::new(Dtype::pointer(inner_dtype.clone())),
-                    },
-                    func_ctx,
-                );
+            if let Some(_inner_dtype) = ptr_dtype.get_array_inner() {
+                return Ok(operand);
+            // return self.insert_instruction(
+            //     ir::Instruction::GetElementPtr {
+            //         ptr: operand.clone(),
+            //         offset: Operand::Constant(ir::Constant::int(0, Dtype::INT)),
+            //         dtype: Box::new(Dtype::pointer(inner_dtype.clone())),
+            //     },
+            //     func_ctx,
+            // );
             } else {
                 return self.insert_instruction(
                     ir::Instruction::Load {

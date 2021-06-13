@@ -47,8 +47,8 @@ test_cases=(
     array5.c
     typedef.c
     switch.c
-    # complete!!!
     struct.c
+    # complete!!!
     struct2.c
     struct3.c
     temp2.c
