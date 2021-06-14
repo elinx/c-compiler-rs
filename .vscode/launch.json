@@ -43,7 +43,7 @@
             },
             "args": [
                 "-i",
-                "examples/c/struct.c"
+                "examples/c/struct2.c"
             ],
             "cwd": "${workspaceFolder}"
         },

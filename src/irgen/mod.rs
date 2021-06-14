@@ -1,8 +1,8 @@
 use core::f64;
 use core::{fmt, panic};
-use std::cmp;
 use std::mem;
 use std::ops::Deref;
+use std::{cmp, usize};
 use std::{
     collections::{BTreeMap, HashMap},
     convert::TryFrom,
@@ -981,42 +981,106 @@ impl Irgen {
             let ptr = Operand::register(rid, Dtype::pointer(dtype.clone()));
             func_ctx.insert_symbol_table_entry(name.clone(), ptr.clone())?;
 
-            // translate initializer
             if let Some(ref initializer) = declarator.node.initializer {
-                match &initializer.node {
-                    Initializer::Expression(ref expr) => {
-                        let operand =
-                            self.translate_expression_rvalue(&expr.deref().node, func_ctx)?;
-                        let operand = self.translate_typecast(&operand, &dtype, func_ctx)?;
-                        let instr = Instruction::Store {
-                            ptr,
-                            value: operand,
-                        };
-                        func_ctx
-                            .curr_block
-                            .instructions
-                            .push(Named::new(None, instr));
-                    }
-                    Initializer::List(initializers) => {
-                        for (index, initializer) in initializers.iter().enumerate() {
-                            let initializer = &initializer.node.initializer.deref().node;
-                            let initializer = match initializer {
-                                Initializer::Expression(expr) => &expr.deref().node,
-                                Initializer::List(_) => todo!(),
-                            };
+                self.translate_initializers(&ptr, &dtype, &initializer.node, func_ctx)?;
+            }
+            // translate initializer
+            // if let Some(ref initializer) = declarator.node.initializer {
+            //     match &initializer.node {
+            //         Initializer::Expression(ref expr) => {
+            //             let operand =
+            //                 self.translate_expression_rvalue(&expr.deref().node, func_ctx)?;
+            //             let operand = self.translate_typecast(&operand, &dtype, func_ctx)?;
+            //             let instr = Instruction::Store {
+            //                 ptr,
+            //                 value: operand,
+            //             };
+            //             func_ctx
+            //                 .curr_block
+            //                 .instructions
+            //                 .push(Named::new(None, instr));
+            //         }
+            //         Initializer::List(initializers) => {
+            //             for (index, initializer) in initializers.iter().enumerate() {
+            //                 let initializer = &initializer.node.initializer.deref().node;
+            //                 let initializer = match initializer {
+            //                     Initializer::Expression(expr) => &expr.deref().node,
+            //                     Initializer::List(_) => todo!(),
+            //                 };
+            //                 let value = self.translate_expression_rvalue(initializer, func_ctx)?;
+            //                 let index = Operand::Constant(ir::Constant::int(
+            //                     index as u128,
+            //                     ir::Dtype::LONGLONG,
+            //                 ));
+            //                 let ptr =
+            //                     self.translate_index_op_inner(ptr.clone(), index, func_ctx)?;
+            //                 self.insert_instruction(
+            //                     ir::Instruction::Store { ptr, value },
+            //                     func_ctx,
+            //                 )?;
+            //             }
+            //         }
+            //     }
+            // }
+        }
+        Ok(())
+    }
+
+    fn translate_initializers(
+        &self,
+        ptr: &Operand,
+        dtype: &Dtype,
+        initializer: &Initializer,
+        func_ctx: &mut FunctionContext,
+    ) -> Result<(), IrgenError> {
+        match initializer {
+            Initializer::Expression(ref expr) => {
+                println!("ie: {}", expr.write_string());
+                let operand = self.translate_expression_rvalue(&expr.deref().node, func_ctx)?;
+                let operand = self.translate_typecast(&operand, &dtype, func_ctx)?;
+                self.insert_instruction(
+                    Instruction::Store {
+                        ptr: ptr.clone(),
+                        value: operand,
+                    },
+                    func_ctx,
+                )?;
+            }
+            Initializer::List(initializers) => {
+                println!("ii: {}", initializers.write_string());
+                for (index, initializer) in initializers.iter().enumerate() {
+                    let initializer = &initializer.node.initializer.deref().node;
+                    let index =
+                        Operand::Constant(ir::Constant::int(index as u128, ir::Dtype::LONGLONG));
+                    match initializer {
+                        Initializer::Expression(expr) => {
+                            let initializer = &expr.deref().node;
                             let value = self.translate_expression_rvalue(initializer, func_ctx)?;
-                            let index = Operand::Constant(ir::Constant::int(
-                                index as u128,
-                                ir::Dtype::LONGLONG,
-                            ));
+                            println!(
+                                "[{}] iie: {}, value: {:?}, index: {:?}",
+                                index,
+                                expr.write_string(),
+                                value,
+                                index,
+                            );
                             let ptr =
                                 self.translate_index_op_inner(ptr.clone(), index, func_ctx)?;
+                            let target_dtype = ptr.dtype();
+                            let target_dtype = target_dtype
+                                .get_pointer_inner()
+                                .expect("should be pointer type");
+                            let value = self.translate_typecast(&value, &target_dtype, func_ctx)?;
                             self.insert_instruction(
                                 ir::Instruction::Store { ptr, value },
                                 func_ctx,
                             )?;
                         }
-                    }
+                        Initializer::List(_) => {
+                            let ptr =
+                                self.translate_index_op_inner(ptr.clone(), index, func_ctx)?;
+                            self.translate_initializers(&ptr, dtype, initializer, func_ctx)?;
+                        }
+                    };
                 }
             }
         }
@@ -1235,15 +1299,47 @@ impl Irgen {
                     func_ctx,
                 );
             }
-            Dtype::Struct { .. } => {
-                return self.insert_instruction(
-                    ir::Instruction::GetElementPtr {
-                        ptr: base.clone(),
-                        offset: index.clone(),
-                        dtype: Box::new(base.dtype().clone()),
-                    },
-                    func_ctx,
-                );
+            Dtype::Struct { name, .. } => {
+                let struct_name = name.as_ref().expect("`self` must have its name");
+                let struct_type = self
+                    .structs
+                    .get(struct_name)
+                    .expect("`structs` must have value matched with `struct_name`")
+                    .as_ref()
+                    .expect("`struct_type` must have its definition");
+                println!("struct dtype: {:?}", &struct_type);
+                let index_int = index
+                    .get_constant()
+                    .expect("constant")
+                    .get_int()
+                    .expect("int index")
+                    .0;
+                match struct_type {
+                    Dtype::Struct {
+                        fields,
+                        size_align_offsets,
+                        ..
+                    } => {
+                        let dtype =
+                            fields.as_ref().expect("empty fields")[index_int as usize].deref();
+                        let dtype = Dtype::pointer(dtype.clone());
+                        let offset = size_align_offsets.as_ref().expect("empty offsets").2
+                            [index_int as usize];
+                        let offset = ir::Operand::constant(ir::Constant::int(
+                            offset as u128,
+                            ir::Dtype::LONG,
+                        ));
+                        return self.insert_instruction(
+                            ir::Instruction::GetElementPtr {
+                                ptr: base.clone(),
+                                offset,
+                                dtype: Box::new(dtype.clone()),
+                            },
+                            func_ctx,
+                        );
+                    }
+                    _ => panic!("not a struct type"),
+                }
             }
             _ => panic!("invalid lhs value dtype"),
         };
@@ -1406,14 +1502,15 @@ impl Irgen {
 
                 let index =
                     Operand::Constant(ir::Constant::int(offset as u128, ir::Dtype::LONGLONG));
-                self.insert_instruction(
+                let ptr = self.insert_instruction(
                     ir::Instruction::GetElementPtr {
                         ptr: base,
                         offset: index,
                         dtype: Box::new(dtype),
                     },
                     func_ctx,
-                )
+                )?;
+                self.insert_instruction(ir::Instruction::Load { ptr }, func_ctx)
             }
             Expression::Call(call) => self.translate_call_expression(&call.deref().node, func_ctx),
             Expression::CompoundLiteral(_) => todo!("compound literal"),
@@ -2088,7 +2185,9 @@ impl Irgen {
             (Dtype::Int { .. }, Dtype::Float { .. })
             | (Dtype::Float { .. }, Dtype::Int { .. })
             | (Dtype::Float { .. }, Dtype::Float { .. }) => Ok(Dtype::DOUBLE),
-            // (Dtype::Int { width, is_signed, is_const }, Dtype::Pointer { inner, is_const }) => {}
+            (Dtype::Int { .. }, Dtype::Pointer { inner, .. }) => {
+                self.translate_merge_type(lhs, inner.deref())
+            }
             // (Dtype::Int { width, is_signed, is_const }, Dtype::Array { inner, size }) => {}
             // (Dtype::Int { width, is_signed, is_const }, Dtype::Struct { name, fields, is_const, size_align_offsets }) => {}
             // (Dtype::Int { width, is_signed, is_const }, Dtype::Function { ret, params }) => {}

@@ -1,6 +1,8 @@
 #!/bin/bash
 
 test_cases=(
+    struct.c
+    struct2.c
     fibonacci.c
     fib2.c
     fib3.c
