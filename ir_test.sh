@@ -1,8 +1,6 @@
 #!/bin/bash
 
 test_cases=(
-    struct.c
-    struct2.c
     fibonacci.c
     fib2.c
     fib3.c
@@ -50,10 +48,10 @@ test_cases=(
     typedef.c
     switch.c
     struct.c
-    # complete!!!
     struct2.c
     struct3.c
     temp2.c
+    # complete!!!
 )
 
 for test_case in "${test_cases[@]}"; do

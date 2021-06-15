@@ -221,6 +221,17 @@ impl Irgen {
             base_dtype,
             is_typedef
         );
+        if decl.declarators.is_empty() {
+            base_dtype
+                .clone()
+                .resolve_structs(&mut self.structs, &mut 0)
+                .map_err(|e| {
+                    IrgenError::new(
+                        "resolve structs error".to_owned(),
+                        IrgenErrorMessage::InvalidDtype { dtype_error: e },
+                    )
+                })?;
+        }
         for declarator in &decl.declarators {
             let initializer = declarator.node.initializer.as_ref();
             let declarator = &declarator.node.declarator.node;
@@ -709,7 +720,7 @@ impl Irgen {
                 let body = &switch_stmt.node.statement.deref().node;
                 let exit_bid = func_ctx.alloc_bid();
                 func_ctx.bc_stack.push((exit_bid, BlockId(0)));
-                // println!("switch stmt\n  cond: {:#?}\n body: {:#?}", cond, body);
+                // log::debug!("switch stmt\n  cond: {:#?}\n body: {:#?}", cond, body);
 
                 let cond_context =
                     std::mem::replace(&mut func_ctx.curr_block, BBContext::new(exit_bid));
@@ -1035,7 +1046,7 @@ impl Irgen {
     ) -> Result<(), IrgenError> {
         match initializer {
             Initializer::Expression(ref expr) => {
-                println!("ie: {}", expr.write_string());
+                log::debug!("ie: {}", expr.write_string());
                 let operand = self.translate_expression_rvalue(&expr.deref().node, func_ctx)?;
                 let operand = self.translate_typecast(&operand, &dtype, func_ctx)?;
                 self.insert_instruction(
@@ -1047,7 +1058,7 @@ impl Irgen {
                 )?;
             }
             Initializer::List(initializers) => {
-                println!("ii: {}", initializers.write_string());
+                log::debug!("ii: {}", initializers.write_string());
                 for (index, initializer) in initializers.iter().enumerate() {
                     let initializer = &initializer.node.initializer.deref().node;
                     let index =
@@ -1056,7 +1067,7 @@ impl Irgen {
                         Initializer::Expression(expr) => {
                             let initializer = &expr.deref().node;
                             let value = self.translate_expression_rvalue(initializer, func_ctx)?;
-                            println!(
+                            log::debug!(
                                 "[{}] iie: {}, value: {:?}, index: {:?}",
                                 index,
                                 expr.write_string(),
@@ -1307,7 +1318,7 @@ impl Irgen {
                     .expect("`structs` must have value matched with `struct_name`")
                     .as_ref()
                     .expect("`struct_type` must have its definition");
-                println!("struct dtype: {:?}", &struct_type);
+                log::debug!("struct dtype: {:?}", &struct_type);
                 let index_int = index
                     .get_constant()
                     .expect("constant")
@@ -1379,11 +1390,16 @@ impl Irgen {
             Expression::StringLiteral(_) => todo!("string literal"),
             Expression::GenericSelection(_) => todo!("generic selection"),
             Expression::Member(member_expr) => {
-                let _op = &member_expr.deref().node.operator.node;
+                let op = &member_expr.deref().node.operator.node;
                 let expression = &member_expr.deref().node.expression.deref().node;
                 let identifier = &member_expr.deref().node.identifier.node.name;
 
-                let base = self.translate_expression_lvalue(expression, func_ctx)?;
+                let mut base = self.translate_expression_lvalue(expression, func_ctx)?;
+                if matches!(op, MemberOperator::Indirect) {
+                    base =
+                        self.insert_instruction(ir::Instruction::Load { ptr: base }, func_ctx)?;
+                }
+
                 // dbg!(&base);
                 let (offset, dtype) = base
                     .dtype()
@@ -1475,11 +1491,15 @@ impl Irgen {
             Expression::StringLiteral(_) => todo!("string literal"),
             Expression::GenericSelection(_) => todo!("generic selection"),
             Expression::Member(member_expr) => {
-                let _op = &member_expr.deref().node.operator.node;
+                let op = &member_expr.deref().node.operator.node;
                 let expression = &member_expr.deref().node.expression.deref().node;
                 let identifier = &member_expr.deref().node.identifier.node.name;
 
-                let base = self.translate_expression_lvalue(expression, func_ctx)?;
+                let mut base = self.translate_expression_lvalue(expression, func_ctx)?;
+                if matches!(op, MemberOperator::Indirect) {
+                    base =
+                        self.insert_instruction(ir::Instruction::Load { ptr: base }, func_ctx)?;
+                }
                 // dbg!(&base);
                 let (offset, dtype) = base
                     .dtype()
@@ -1510,7 +1530,23 @@ impl Irgen {
                     },
                     func_ctx,
                 )?;
-                self.insert_instruction(ir::Instruction::Load { ptr }, func_ctx)
+                ptr.dtype()
+                    .get_pointer_inner()
+                    .and_then(|d| {
+                        if d.is_scalar() {
+                            self.insert_instruction(ir::Instruction::Load { ptr }, func_ctx)
+                                .ok()
+                        } else {
+                            Some(ptr)
+                        }
+                    })
+                    .ok_or(IrgenError::new(
+                        member_expr.write_string(),
+                        IrgenErrorMessage::Misc {
+                            message: "member expr get error".to_owned(),
+                        },
+                    ))
+                // self.insert_instruction(ir::Instruction::Load { ptr }, func_ctx)
             }
             Expression::Call(call) => self.translate_call_expression(&call.deref().node, func_ctx),
             Expression::CompoundLiteral(_) => todo!("compound literal"),
@@ -1690,7 +1726,7 @@ impl Irgen {
                 let operand = self.translate_expression_rvalue(&unary.operand.node, func_ctx)?;
                 let operand_ptr =
                     self.translate_expression_lvalue(&unary.operand.node, func_ctx)?;
-                // println!("operand: {:?}", operand);
+                // log::debug!("operand: {:?}", operand);
                 if let Some(inner) = operand.dtype().get_pointer_inner() {
                     let inner_size = inner
                         .deref()
