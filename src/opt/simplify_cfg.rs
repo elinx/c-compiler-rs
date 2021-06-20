@@ -1,3 +1,4 @@
+use std::collections::{HashMap, VecDeque};
 use std::ops::Deref;
 
 use crate::ir::*;
@@ -82,6 +83,7 @@ impl SimplifyCfgConstProp {
         }
     }
 }
+
 impl Optimize<FunctionDefinition> for SimplifyCfgConstProp {
     fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
         code.blocks
@@ -98,9 +100,54 @@ impl Optimize<FunctionDefinition> for SimplifyCfgConstProp {
     }
 }
 
+impl SimplifyCfgReach {
+    fn make_graph(&self, func: &FunctionDefinition) -> HashMap<BlockId, Vec<BlockId>> {
+        let mut graph = HashMap::new();
+        func.blocks.iter().for_each(|(block_id, block)| {
+            let list = match &block.exit {
+                BlockExit::Jump { arg } => vec![arg.bid],
+                BlockExit::ConditionalJump {
+                    arg_then, arg_else, ..
+                } => vec![arg_then.deref().bid, arg_else.deref().bid],
+                BlockExit::Switch { default, cases, .. } => {
+                    let mut bids = Vec::new();
+                    bids.push(default.deref().bid);
+                    cases.iter().for_each(|(_, exit)| bids.push(exit.bid));
+                    bids
+                }
+                _ => vec![],
+            };
+            graph.insert(*block_id, list);
+        });
+        graph
+    }
+}
+
 impl Optimize<FunctionDefinition> for SimplifyCfgReach {
-    fn optimize(&mut self, _code: &mut FunctionDefinition) -> bool {
-        todo!("homework 3")
+    fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
+        let graph = self.make_graph(code);
+        let mut queue = VecDeque::new();
+        queue.push_back(code.bid_init);
+        let mut visited: HashMap<&BlockId, bool> = HashMap::new();
+        while !queue.is_empty() {
+            let bid = queue.pop_front().expect("none empty queue");
+            if let Some(adjs) = graph.get(&bid) {
+                adjs.iter().for_each(|bid| {
+                    if visited.get(bid).is_none() {
+                        visited.entry(bid).or_insert(true);
+                        queue.push_back(*bid);
+                    }
+                });
+            }
+        }
+        let orig_blocks_num = code.blocks.len();
+        graph
+            .keys()
+            .filter(|bid| !visited.contains_key(bid))
+            .for_each(|bid| {
+                code.blocks.remove(bid);
+            });
+        orig_blocks_num != visited.len()
     }
 }
 
