@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
 use crate::ir::*;
@@ -126,16 +126,14 @@ impl SimplifyCfgReach {
 impl Optimize<FunctionDefinition> for SimplifyCfgReach {
     fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
         let graph = self.make_graph(code);
-        let mut queue = VecDeque::new();
-        queue.push_back(code.bid_init);
-        let mut visited: HashMap<&BlockId, bool> = HashMap::new();
-        while !queue.is_empty() {
-            let bid = queue.pop_front().expect("none empty queue");
+        let mut queue = vec![code.bid_init];
+        let mut visited = HashSet::new();
+        visited.insert(code.bid_init);
+        while let Some(bid) = queue.pop() {
             if let Some(adjs) = graph.get(&bid) {
                 adjs.iter().for_each(|bid| {
-                    if visited.get(bid).is_none() {
-                        visited.entry(bid).or_insert(true);
-                        queue.push_back(*bid);
+                    if visited.insert(*bid) {
+                        queue.push(*bid);
                     }
                 });
             }
@@ -143,7 +141,7 @@ impl Optimize<FunctionDefinition> for SimplifyCfgReach {
         let orig_blocks_num = code.blocks.len();
         graph
             .keys()
-            .filter(|bid| !visited.contains_key(bid))
+            .filter(|bid| !visited.contains(bid))
             .for_each(|bid| {
                 code.blocks.remove(bid);
             });
