@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Deref;
 
 use crate::ir::*;
@@ -100,32 +100,30 @@ impl Optimize<FunctionDefinition> for SimplifyCfgConstProp {
     }
 }
 
-impl SimplifyCfgReach {
-    fn make_graph(&self, func: &FunctionDefinition) -> HashMap<BlockId, Vec<BlockId>> {
-        let mut graph = HashMap::new();
-        func.blocks.iter().for_each(|(block_id, block)| {
-            let list = match &block.exit {
-                BlockExit::Jump { arg } => vec![arg.bid],
-                BlockExit::ConditionalJump {
-                    arg_then, arg_else, ..
-                } => vec![arg_then.deref().bid, arg_else.deref().bid],
-                BlockExit::Switch { default, cases, .. } => {
-                    let mut bids = Vec::new();
-                    bids.push(default.deref().bid);
-                    cases.iter().for_each(|(_, exit)| bids.push(exit.bid));
-                    bids
-                }
-                _ => vec![],
-            };
-            graph.insert(*block_id, list);
-        });
-        graph
-    }
+fn make_graph(func: &FunctionDefinition) -> HashMap<BlockId, Vec<BlockId>> {
+    let mut graph = HashMap::new();
+    func.blocks.iter().for_each(|(block_id, block)| {
+        let list = match &block.exit {
+            BlockExit::Jump { arg } => vec![arg.bid],
+            BlockExit::ConditionalJump {
+                arg_then, arg_else, ..
+            } => vec![arg_then.deref().bid, arg_else.deref().bid],
+            BlockExit::Switch { default, cases, .. } => {
+                let mut bids = Vec::new();
+                bids.push(default.deref().bid);
+                cases.iter().for_each(|(_, exit)| bids.push(exit.bid));
+                bids
+            }
+            _ => vec![],
+        };
+        graph.insert(*block_id, list);
+    });
+    graph
 }
 
 impl Optimize<FunctionDefinition> for SimplifyCfgReach {
     fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
-        let graph = self.make_graph(code);
+        let graph = make_graph(code);
         let mut queue = vec![code.bid_init];
         let mut visited = HashSet::new();
         visited.insert(code.bid_init);
@@ -150,8 +148,28 @@ impl Optimize<FunctionDefinition> for SimplifyCfgReach {
 }
 
 impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
-    fn optimize(&mut self, _code: &mut FunctionDefinition) -> bool {
-        todo!("homework 3")
+    fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
+        let graph = make_graph(code);
+
+        let mut in_degrees = HashMap::new();
+        for (_, blocks) in graph {
+            for bid_out in blocks {
+                *in_degrees.entry(bid_out).or_insert(0) += 1;
+            }
+        }
+
+        for (bid_from, block_from) in
+            unsafe { &mut *(&mut code.blocks as *mut BTreeMap<BlockId, Block>) }
+        {
+            if let BlockExit::Jump { arg } = &block_from.exit {
+                if *bid_from != arg.bid && in_degrees.get(&bid_from).eq(&Some(&1)) {
+                    let bid_to = arg.bid;
+                    let _block_to = code.blocks.remove(&bid_to).expect("remove block");
+                    let _args_to = arg.args.clone();
+                }
+            }
+        }
+        false
     }
 }
 
