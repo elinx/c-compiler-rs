@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
+
+use itertools::izip;
 
 use crate::ir::*;
 use crate::opt::FunctionPass;
@@ -147,9 +149,72 @@ impl Optimize<FunctionDefinition> for SimplifyCfgReach {
     }
 }
 
+fn replace_operands(operand: &Operand, replaces: &HashMap<RegisterId, Operand>) -> Operand {
+    match operand {
+        Operand::Constant(_) => operand.clone(),
+        Operand::Register { rid, .. } => {
+            if let Some(operand) = replaces.get(rid) {
+                operand.clone()
+            } else {
+                operand.clone()
+            }
+        }
+    }
+}
+
+impl Block {
+    fn walk<F>(&mut self, transform_operand: F)
+    where
+        F: Fn(&Operand) -> Operand,
+    {
+        for instr in &mut self.instructions {
+            match &mut instr.deref_mut() {
+                Instruction::BinOp { lhs, rhs, .. } => {
+                    *lhs = transform_operand(lhs);
+                    *rhs = transform_operand(rhs);
+                }
+                Instruction::UnaryOp { operand, .. } => *operand = transform_operand(operand),
+                Instruction::Store { ptr, value } => {
+                    *ptr = transform_operand(ptr);
+                    *value = transform_operand(value);
+                }
+                Instruction::Load { ptr } => *ptr = transform_operand(ptr),
+                Instruction::Call { callee, args, .. } => {
+                    *callee = transform_operand(callee);
+                    args.iter_mut()
+                        .for_each(|arg| *arg = transform_operand(arg));
+                }
+                Instruction::TypeCast { value, .. } => *value = transform_operand(value),
+                Instruction::GetElementPtr { ptr, offset, .. } => {
+                    *ptr = transform_operand(ptr);
+                    *offset = transform_operand(offset);
+                }
+                _ => {}
+            }
+        }
+        match &mut self.exit {
+            // TODO: JumpArg apply transform
+            // BlockExit::Jump { arg } => todo!(),
+            // BlockExit::ConditionalJump {
+            //     condition,
+            //     arg_then,
+            //     arg_else,
+            // } => todo!(),
+            // BlockExit::Switch {
+            //     value,
+            //     default,
+            //     cases,
+            // } => todo!(),
+            BlockExit::Return { value } => *value = transform_operand(value),
+            _ => {}
+        }
+    }
+}
+
 impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
     fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
         let graph = make_graph(code);
+        let mut result = false;
 
         let mut in_degrees = HashMap::new();
         for (_, blocks) in graph {
@@ -158,18 +223,55 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
             }
         }
 
+        let mut blocks_remove = Vec::new();
         for (bid_from, block_from) in
             unsafe { &mut *(&mut code.blocks as *mut BTreeMap<BlockId, Block>) }
         {
             if let BlockExit::Jump { arg } = &block_from.exit {
-                if *bid_from != arg.bid && in_degrees.get(&bid_from).eq(&Some(&1)) {
-                    let bid_to = arg.bid;
-                    let _block_to = code.blocks.remove(&bid_to).expect("remove block");
-                    let _args_to = arg.args.clone();
+                let bid_to = arg.bid;
+                if *bid_from != bid_to && in_degrees.get(&bid_to).eq(&Some(&1)) {
+                    // let block_to = code.blocks.remove(&bid_to).expect("remove block");
+                    let block_to = code.blocks.get(&bid_to).expect("remove block");
+                    blocks_remove.push(bid_to.clone());
+                    let args_to = arg.args.clone();
+                    let mut replaces = HashMap::new();
+
+                    // mappings between phinode parameter and argument, note that the argument are
+                    // all constants which means all operands using phinode could be substituted directly
+                    for (i, (phi, arg)) in izip!(&block_to.phinodes, &args_to).enumerate() {
+                        assert_eq!(phi.deref(), &arg.dtype());
+                        let phi_param = RegisterId::arg(bid_to, i);
+                        replaces.insert(phi_param, arg.clone());
+                    }
+
+                    // mappings between block_to and block_from, iid and bid are fixed(by adding a offset
+                    // and bid replacement)
+                    let instr_from_offset = block_from.instructions.len();
+                    for (i, instr_to) in block_to.instructions.iter().enumerate() {
+                        let from = RegisterId::temp(bid_to, i);
+                        let to = Operand::register(
+                            RegisterId::temp(*bid_from, i + instr_from_offset),
+                            instr_to.dtype().clone(),
+                        );
+                        replaces.insert(from, to);
+                        block_from.instructions.push(instr_to.clone());
+                    }
+
+                    // BlockExit instruction is not a part of instructions, should handle seperatedly
+                    block_from.exit = block_to.exit.clone();
+
+                    // replace un-fixed registers
+                    block_from.walk(|operand| replace_operands(&operand, &replaces));
+                    // code.walk(|operand| replace_operands(&operand, &replaces));
+                    result = true;
                 }
             }
         }
-        false
+        // delete merged blocks
+        blocks_remove.into_iter().for_each(|bid| {
+            code.blocks.remove(&bid).expect("remove block");
+        });
+        result
     }
 }
 
