@@ -276,7 +276,14 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
 }
 
 impl Optimize<FunctionDefinition> for SimplifyCfgEmpty {
-    fn optimize(&mut self, _code: &mut FunctionDefinition) -> bool {
-        todo!("homework 3")
+    fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
+        let blocks_empty = code
+            .blocks
+            .iter()
+            .filter(|(_, block)| block.phinodes.is_empty() && block.instructions.is_empty())
+            .map(|(bid, block)| (*bid, block.clone()))
+            .collect::<HashMap<_, _>>();
+        println!("empty blocks: {:?}", blocks_empty);
+        false
     }
 }
