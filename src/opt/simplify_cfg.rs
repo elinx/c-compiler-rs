@@ -275,6 +275,47 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
     }
 }
 
+fn simplify_block_exit(exit: &mut BlockExit, blocks_empty: &HashMap<BlockId, Block>) -> bool {
+    match exit {
+        BlockExit::Jump { arg } => {
+            if let Some(block) = blocks_empty.get(&arg.bid) {
+                *exit = block.exit.clone();
+                true
+            } else {
+                false
+            }
+        }
+        BlockExit::ConditionalJump {
+            arg_then, arg_else, ..
+        } => {
+            let l = simplify_jump_arg(arg_then, blocks_empty);
+            let r = simplify_jump_arg(arg_else, blocks_empty);
+            l || r
+        }
+        BlockExit::Switch { default, cases, .. } => {
+            let d = simplify_jump_arg(default, blocks_empty);
+            let cs = cases
+                .iter_mut()
+                .map(|c| simplify_jump_arg(&mut c.1, blocks_empty))
+                .fold(false, |l, r| l || r);
+            d || cs
+        }
+        _ => false,
+    }
+}
+
+fn simplify_jump_arg(arg: &mut JumpArg, blocks_empty: &HashMap<BlockId, Block>) -> bool {
+    if let Some(block) = blocks_empty.get(&arg.bid) {
+        if let BlockExit::Jump { arg: a } = &block.exit {
+            *arg = a.clone();
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
 impl Optimize<FunctionDefinition> for SimplifyCfgEmpty {
     fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
         let blocks_empty = code
@@ -283,7 +324,17 @@ impl Optimize<FunctionDefinition> for SimplifyCfgEmpty {
             .filter(|(_, block)| block.phinodes.is_empty() && block.instructions.is_empty())
             .map(|(bid, block)| (*bid, block.clone()))
             .collect::<HashMap<_, _>>();
-        println!("empty blocks: {:?}", blocks_empty);
-        false
+        // Fix: can't handle following case
+        // .. -> B7 -> Be8 -> Be9 -> B10 -> ..
+        // blocks_empty: Be8, Be9
+        // iter1: B7 -> Be9
+        // iter2: Be8 -> B10
+        // iter3: Be9 -> B10
+        // the end: B7 -> Be9 -> B10 -> ..
+        // expect: B7 -> B10 -> ..
+        code.blocks
+            .iter_mut()
+            .map(|(_, block)| simplify_block_exit(&mut block.exit, &blocks_empty))
+            .fold(false, |l, r| l || r)
     }
 }
