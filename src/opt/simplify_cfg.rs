@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 
 use itertools::izip;
@@ -223,16 +223,72 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
             }
         }
 
-        let mut blocks_remove = Vec::new();
-        for (bid_from, block_from) in
-            unsafe { &mut *(&mut code.blocks as *mut BTreeMap<BlockId, Block>) }
-        {
+        // collects blocks to be removed
+        let blocks_remove: HashSet<_> = code
+            .blocks
+            .iter()
+            .map(|(bid_from, block_from)| {
+                if let BlockExit::Jump { arg } = &block_from.exit {
+                    let bid_to = arg.bid;
+                    if *bid_from != bid_to && in_degrees.get(&bid_to).eq(&Some(&1)) {
+                        result = true;
+                        return Some(bid_to);
+                    }
+                }
+                None
+            })
+            .filter(|x| x.is_some())
+            .collect();
+        println!("blocks_remove: {:?}", blocks_remove);
+
+        // merge nodes
+        for (bid_from, ref mut block_from) in &code.blocks {
+            if let BlockExit::Jump { arg } = &block_from.exit {
+                let bid_to = arg.bid;
+                if blocks_remove.get(&Some(bid_to)).is_some() {
+                    let args_to = arg.args.clone();
+                    let block_to = code.blocks.get(&bid_to).expect("block_to");
+                    let mut replaces = HashMap::new();
+
+                    // mappings between phinode parameter and argument, note that the argument are
+                    // all constants which means all operands using phinode could be substituted directly
+                    for (i, (phi, arg)) in izip!(&block_to.phinodes, &args_to).enumerate() {
+                        assert_eq!(phi.deref(), &arg.dtype());
+                        let phi_param = RegisterId::arg(bid_to, i);
+                        replaces.insert(phi_param, arg.clone());
+                    }
+
+                    // mappings between block_to and block_from, iid and bid are fixed(by adding a offset
+                    // and bid replacement)
+                    let instr_from_offset = block_from.instructions.len();
+                    for (i, instr_to) in block_to.instructions.iter().enumerate() {
+                        let from = RegisterId::temp(bid_to, i);
+                        let to = Operand::register(
+                            RegisterId::temp(*bid_from, i + instr_from_offset),
+                            instr_to.dtype().clone(),
+                        );
+                        replaces.insert(from, to);
+                        block_from.instructions.push(instr_to.clone());
+                    }
+
+                    // BlockExit instruction is not a part of instructions, should handle seperatedly
+                    block_from.exit = block_to.exit.clone();
+
+                    // replace un-fixed registers
+                    block_from.walk(|operand| replace_operands(&operand, &replaces));
+                    result = true;
+                }
+            }
+        }
+
+        /*
+        for (bid_from, block_from) in &code.blocks {
             if let BlockExit::Jump { arg } = &block_from.exit {
                 let bid_to = arg.bid;
                 if *bid_from != bid_to && in_degrees.get(&bid_to).eq(&Some(&1)) {
                     // let block_to = code.blocks.remove(&bid_to).expect("remove block");
                     let block_to = code.blocks.get(&bid_to).expect("remove block");
-                    blocks_remove.push(bid_to.clone());
+                    // blocks_remove.push(bid_to.clone());
                     let args_to = arg.args.clone();
                     let mut replaces = HashMap::new();
 
@@ -267,10 +323,11 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
                 }
             }
         }
+        */
         // delete merged blocks
-        blocks_remove.into_iter().for_each(|bid| {
-            code.blocks.remove(&bid).expect("remove block");
-        });
+        // blocks_remove.into_iter().for_each(|bid| {
+        //     code.blocks.remove(&bid).expect("remove block");
+        // });
         result
     }
 }
