@@ -120,7 +120,34 @@ fn make_graph(func: &FunctionDefinition) -> HashMap<BlockId, Vec<BlockId>> {
         };
         graph.insert(*block_id, list);
     });
+    // println!("graph: {:?}", graph);
     graph
+}
+
+#[allow(dead_code)]
+fn do_post_order(
+    bid: BlockId,
+    graph: &HashMap<BlockId, Vec<BlockId>>,
+    visited: &mut HashSet<BlockId>,
+    res: &mut Vec<BlockId>,
+) {
+    visited.insert(bid);
+    if let Some(adjs) = graph.get(&bid) {
+        adjs.iter().for_each(|adj| {
+            if visited.insert(*adj) {
+                do_post_order(*adj, graph, visited, res);
+            }
+        })
+    }
+    res.push(bid);
+}
+
+#[allow(dead_code)]
+fn post_order(bid_init: BlockId, graph: &HashMap<BlockId, Vec<BlockId>>) -> Vec<BlockId> {
+    let mut res = Vec::new();
+    let mut visited = HashSet::new();
+    do_post_order(bid_init, graph, &mut visited, &mut res);
+    res
 }
 
 impl Optimize<FunctionDefinition> for SimplifyCfgReach {
@@ -195,18 +222,14 @@ impl Block {
         match &mut self.exit {
             // TODO: JumpArg apply transform
             // BlockExit::Jump { arg } => todo!(),
-            // BlockExit::ConditionalJump {
-            //     condition,
-            //     arg_then,
-            //     arg_else,
-            // } => todo!(),
-            // BlockExit::Switch {
-            //     value,
-            //     default,
-            //     cases,
-            // } => todo!(),
+            BlockExit::ConditionalJump { condition, .. } => {
+                *condition = transform_operand(condition)
+            }
+            BlockExit::Switch { value, .. } => *value = transform_operand(value),
             BlockExit::Return { value } => *value = transform_operand(value),
-            _ => {}
+            _ => {
+                // println!("self.exit: {:?}", self.exit);
+            }
         }
     }
 }
@@ -216,6 +239,9 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
         let graph = make_graph(code);
         let mut result = false;
 
+        // let order = post_order(code.bid_init, &graph);
+        // println!("order: {:?}", order);
+
         let mut in_degrees = HashMap::new();
         for (_, blocks) in graph {
             for bid_out in blocks {
@@ -223,31 +249,35 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
             }
         }
 
-        // collects blocks to be removed
-        let blocks_remove: HashSet<_> = code
-            .blocks
-            .iter()
-            .map(|(bid_from, block_from)| {
-                if let BlockExit::Jump { arg } = &block_from.exit {
-                    let bid_to = arg.bid;
-                    if *bid_from != bid_to && in_degrees.get(&bid_to).eq(&Some(&1)) {
-                        result = true;
-                        return Some(bid_to);
-                    }
+        // collects blocks ids to be removed
+        let mut blocks_id_remove = HashSet::new();
+        code.blocks.iter().for_each(|(bid_from, block_from)| {
+            if let BlockExit::Jump { arg } = &block_from.exit {
+                let bid_to = arg.bid;
+                if *bid_from != bid_to
+                    && in_degrees.get(&bid_to).eq(&Some(&1))
+                    && !blocks_id_remove.contains(bid_from)
+                {
+                    result = true;
+                    // println!("to remove: {:?}", &bid_to);
+                    blocks_id_remove.insert(bid_to);
                 }
-                None
-            })
-            .filter(|x| x.is_some())
-            .collect();
-        println!("blocks_remove: {:?}", blocks_remove);
+            }
+        });
+        // println!("blocks_id_remove: {:?}", blocks_id_remove);
+
+        // delete to be merged blocks
+        let mut blocks_remove = HashMap::new();
+        blocks_id_remove.iter().for_each(|bid| {
+            blocks_remove.insert(bid, code.blocks.remove(&bid).expect("remove block"));
+        });
 
         // merge nodes
-        for (bid_from, ref mut block_from) in &code.blocks {
+        for (bid_from, block_from) in &mut code.blocks {
             if let BlockExit::Jump { arg } = &block_from.exit {
                 let bid_to = arg.bid;
-                if blocks_remove.get(&Some(bid_to)).is_some() {
+                if let Some(block_to) = blocks_remove.get(&bid_to) {
                     let args_to = arg.args.clone();
-                    let block_to = code.blocks.get(&bid_to).expect("block_to");
                     let mut replaces = HashMap::new();
 
                     // mappings between phinode parameter and argument, note that the argument are
@@ -280,54 +310,6 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
                 }
             }
         }
-
-        /*
-        for (bid_from, block_from) in &code.blocks {
-            if let BlockExit::Jump { arg } = &block_from.exit {
-                let bid_to = arg.bid;
-                if *bid_from != bid_to && in_degrees.get(&bid_to).eq(&Some(&1)) {
-                    // let block_to = code.blocks.remove(&bid_to).expect("remove block");
-                    let block_to = code.blocks.get(&bid_to).expect("remove block");
-                    // blocks_remove.push(bid_to.clone());
-                    let args_to = arg.args.clone();
-                    let mut replaces = HashMap::new();
-
-                    // mappings between phinode parameter and argument, note that the argument are
-                    // all constants which means all operands using phinode could be substituted directly
-                    for (i, (phi, arg)) in izip!(&block_to.phinodes, &args_to).enumerate() {
-                        assert_eq!(phi.deref(), &arg.dtype());
-                        let phi_param = RegisterId::arg(bid_to, i);
-                        replaces.insert(phi_param, arg.clone());
-                    }
-
-                    // mappings between block_to and block_from, iid and bid are fixed(by adding a offset
-                    // and bid replacement)
-                    let instr_from_offset = block_from.instructions.len();
-                    for (i, instr_to) in block_to.instructions.iter().enumerate() {
-                        let from = RegisterId::temp(bid_to, i);
-                        let to = Operand::register(
-                            RegisterId::temp(*bid_from, i + instr_from_offset),
-                            instr_to.dtype().clone(),
-                        );
-                        replaces.insert(from, to);
-                        block_from.instructions.push(instr_to.clone());
-                    }
-
-                    // BlockExit instruction is not a part of instructions, should handle seperatedly
-                    block_from.exit = block_to.exit.clone();
-
-                    // replace un-fixed registers
-                    block_from.walk(|operand| replace_operands(&operand, &replaces));
-                    // code.walk(|operand| replace_operands(&operand, &replaces));
-                    result = true;
-                }
-            }
-        }
-        */
-        // delete merged blocks
-        // blocks_remove.into_iter().for_each(|bid| {
-        //     code.blocks.remove(&bid).expect("remove block");
-        // });
         result
     }
 }

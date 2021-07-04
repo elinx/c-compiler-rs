@@ -113,6 +113,11 @@ fn test_examples_irparse() {
 #[test]
 fn test_examples_simplify_cfg() {
     test_opt(
+        &Path::new("examples/ir0/fib3.ir"),
+        &Path::new("examples/ir1/fib3.ir"),
+        &mut SimplifyCfg::default(),
+    );
+    test_opt(
         &Path::new("examples/simplify_cfg/const_prop.input.ir"),
         &Path::new("examples/simplify_cfg/const_prop.output.ir"),
         &mut FunctionPass::<SimplifyCfgConstProp>::default(),
