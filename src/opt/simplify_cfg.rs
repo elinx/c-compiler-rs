@@ -190,7 +190,7 @@ fn replace_operands(operand: &Operand, replaces: &HashMap<RegisterId, Operand>) 
 }
 
 impl Block {
-    fn walk<F>(&mut self, transform_operand: F)
+    pub fn walk<F>(&mut self, transform_operand: F)
     where
         F: Fn(&Operand) -> Operand,
     {

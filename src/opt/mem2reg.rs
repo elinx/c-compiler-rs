@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
-use std::ops::Deref;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
+use std::usize;
 
 use crate::ir::*;
 use crate::opt::FunctionPass;
@@ -145,6 +146,51 @@ impl DomTree {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OperandVar {
+    Operand(Operand),
+    Phi((usize, BlockId)),
+}
+
+#[derive(Debug, Clone)]
+struct JoinTable<'s> {
+    inner: HashMap<(usize, BlockId), BlockId>,
+    dom_tree: &'s DomTree,
+    joins: &'s HashSet<(usize, BlockId)>,
+}
+
+impl<'s> JoinTable<'s> {
+    pub fn new(dom_tree: &'s DomTree, joins: &'s HashSet<(usize, BlockId)>) -> Self {
+        Self {
+            inner: HashMap::new(),
+            dom_tree,
+            joins,
+        }
+    }
+
+    pub fn lookup(&mut self, aid: usize, mut bid: BlockId) -> BlockId {
+        let mut bids = Vec::new();
+        let ret = loop {
+            if let Some(ret) = self.inner.get(&(aid, bid)) {
+                break *ret;
+            }
+            bids.push(bid);
+            if self.joins.contains(&(aid, bid)) {
+                break bid;
+            }
+            if let Some(idom) = self.dom_tree.idoms.get(&bid) {
+                bid = *idom;
+            } else {
+                break bid;
+            }
+        };
+        for bid in bids {
+            self.inner.insert((aid, bid), ret);
+        }
+        ret
+    }
+}
+
 fn make_graph(func: &FunctionDefinition) -> HashMap<BlockId, Vec<BlockId>> {
     let mut graph = HashMap::new();
     func.blocks.iter().for_each(|(block_id, block)| {
@@ -249,15 +295,171 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
         {
             return false;
         }
+        dbg!(&inpromotable);
+        dbg!(&stores);
 
         let graph = make_graph(code);
         let reverse_cfg = reverse_cfg(&graph);
         let dom_tree = DomTree::new(code.bid_init, &graph, &reverse_cfg);
-        dbg!(&inpromotable);
-        dbg!(&stores);
         dbg!(&graph);
         dbg!(&reverse_cfg);
         dbg!(&dom_tree);
+
+        let joins_map: HashMap<usize, HashSet<BlockId>> = stores
+            .iter()
+            .filter(|(aid, _)| !inpromotable.contains(*aid))
+            .map(|(aid, bids)| {
+                (*aid, {
+                    let mut stack = bids.clone();
+                    let mut visited = HashSet::new();
+                    while let Some(bid) = stack.pop() {
+                        if let Some(bid_frontiers) = dom_tree.frontiers.get(&bid) {
+                            for bid_frontier in bid_frontiers {
+                                if visited.insert(*bid_frontier) {
+                                    stack.push(*bid_frontier);
+                                }
+                            }
+                        }
+                    }
+                    visited
+                })
+            })
+            .collect();
+        let mut joins = HashSet::new();
+        for (aid, bids) in joins_map {
+            for bid in bids {
+                joins.insert((aid, bid));
+            }
+        }
+        let mut join_table = JoinTable::new(&dom_tree, &joins);
+        dbg!(&join_table);
+
+        let mut replaces = HashMap::<RegisterId, OperandVar>::new();
+        let mut phinode_indices = HashSet::<(usize, BlockId)>::new();
+        let mut end_values = HashMap::<(usize, BlockId), OperandVar>::new();
+        for (bid, block) in &code.blocks {
+            for (i, instr) in block.instructions.iter().enumerate() {
+                match instr.deref() {
+                    Instruction::Store { ptr, value } => {
+                        if let Some((rid, _)) = ptr.get_register() {
+                            if let RegisterId::Local { aid } = rid {
+                                if inpromotable.contains(aid) {
+                                    continue;
+                                }
+                                end_values.insert((*aid, *bid), OperandVar::Operand(value.clone()));
+                            }
+                        }
+                    }
+                    Instruction::Load { ptr } => {
+                        if let Some((rid, _)) = ptr.get_register() {
+                            if let RegisterId::Local { aid } = rid {
+                                if inpromotable.contains(aid) {
+                                    continue;
+                                }
+                                let bid_join = join_table.lookup(*aid, *bid);
+                                let end_value_join = end_values.get(&(*aid, *bid)).cloned();
+                                let var = end_values.entry((*aid, *bid)).or_insert_with(|| {
+                                    end_value_join.unwrap_or_else(|| {
+                                        phinode_indices.insert((*aid, bid_join));
+                                        OperandVar::Phi((*aid, bid_join))
+                                    })
+                                });
+                                let result =
+                                    replaces.insert(RegisterId::temp(*bid, i), var.clone());
+                                assert_eq!(result, None);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // generates phinodes recursively
+        let mut phinode_visited = phinode_indices;
+        let mut phinode_stack = phinode_visited.iter().cloned().collect::<Vec<_>>();
+        let mut phinodes =
+            BTreeMap::<(usize, BlockId), (Dtype, HashMap<BlockId, OperandVar>)>::new();
+        while let Some((aid, bid)) = phinode_stack.pop() {
+            let mut cases = HashMap::new();
+            if let Some(prevs) = reverse_cfg.get(&bid) {
+                for bid_prev in prevs {
+                    let var_prev = (aid, *bid_prev);
+                    let end_value = end_values.get(&var_prev).cloned().unwrap_or_else(|| {
+                        let bid_prev_phinode = join_table.lookup(aid, *bid_prev);
+                        let var_prev_phinode = (aid, bid_prev_phinode);
+                        if phinode_visited.insert(var_prev_phinode) {
+                            phinode_stack.push(var_prev_phinode);
+                        }
+                        OperandVar::Phi(var_prev_phinode)
+                    });
+                    cases.insert(*bid_prev, end_value);
+                }
+                phinodes.insert(
+                    (aid, bid),
+                    (code.allocations.get(aid).unwrap().deref().clone(), cases),
+                );
+            }
+        }
+
+        let mut phinode_indices = HashMap::<(usize, BlockId), usize>::new();
+        for ((aid, bid), (dtype, _)) in &phinodes {
+            let name = code.allocations.get(*aid).unwrap().name();
+            let block = code.blocks.get_mut(bid).unwrap();
+            let index = block.phinodes.len();
+            block
+                .phinodes
+                .push(Named::new(name.cloned(), dtype.clone()));
+            phinode_indices.insert((*aid, *bid), index);
+        }
+
+        // insert phinode arguments
+        for ((aid, bid), (dtype, phinode)) in &phinodes {
+            let index = *phinode_indices.get(&(*aid, *bid)).unwrap();
+            for (bid_prev, operand_prev) in phinode {
+                let block_prev = code.blocks.get_mut(bid_prev).unwrap();
+                let operand_prev = operand_prev.lookup(dtype, &phinode_indices);
+                block_prev.exit.walk_jump_args(|arg| {
+                    if &arg.bid == bid {
+                        assert_eq!(arg.args.len(), index);
+                        arg.args.push(operand_prev.clone());
+                    }
+                });
+            }
+        }
+
+        // replace the values loaded from promotable allocations
+        code.blocks.values().collect().iter().walk(|operand| {
+            if let Some((rid, dtype)) = operand.get.register() {
+                if let Some(operand_var) = replaces.get(&rid) {
+                    *operand = operand_var.lookup(dtype, &phinode_indices);
+                    return true;
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        });
+
+        // remove load/store instructions
+        for block in code.blocks.values_mut() {
+            for instr in block.instructions.iter_mut() {
+                match instr.deref().deref() {
+                    Instruction::Store { ptr, .. } | Instruction::Load { ptr } => {
+                        if let Some((rid, _)) = ptr.get_register() {
+                            if let RegisterId::Local { aid } = rid {
+                                if !inpromotable.contains(aid) {
+                                    *instr.deref_mut() = Instruction::Nop;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         true
     }
 }
