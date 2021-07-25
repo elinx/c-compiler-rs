@@ -152,6 +152,19 @@ enum OperandVar {
     Phi((usize, BlockId)),
 }
 
+impl OperandVar {
+    pub fn lookup(
+        &self,
+        _dtype: &Dtype,
+        _phinode_indices: &HashMap<(usize, BlockId), usize>,
+    ) -> Operand {
+        match self {
+            OperandVar::Operand(_) => todo!(),
+            OperandVar::Phi(_key) => todo!(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct JoinTable<'s> {
     inner: HashMap<(usize, BlockId), BlockId>,
@@ -285,6 +298,7 @@ fn get_promotable_operands(
 
 impl Optimize<FunctionDefinition> for Mem2regInner {
     fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
+        println!("===== function =====");
         let (inpromotable, stores) = get_promotable_operands(code);
         // all allocations are not promotable then return directly
         if code
@@ -402,6 +416,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
             }
         }
 
+        // insert phinodes
         let mut phinode_indices = HashMap::<(usize, BlockId), usize>::new();
         for ((aid, bid), (dtype, _)) in &phinodes {
             let name = code.allocations.get(*aid).unwrap().name();
@@ -429,18 +444,16 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
         }
 
         // replace the values loaded from promotable allocations
-        code.blocks.values().collect().iter().walk(|operand| {
-            if let Some((rid, dtype)) = operand.get.register() {
-                if let Some(operand_var) = replaces.get(&rid) {
-                    *operand = operand_var.lookup(dtype, &phinode_indices);
-                    return true;
-                } else {
-                    return false;
+        for (_, block) in &mut code.blocks {
+            block.walk(|operand| {
+                if let Some((rid, dtype)) = operand.get_register() {
+                    if let Some(operand_var) = replaces.get(&rid) {
+                        return operand_var.lookup(dtype, &phinode_indices);
+                    }
                 }
-            } else {
-                return false;
-            }
-        });
+                operand.clone()
+            });
+        }
 
         // remove load/store instructions
         for block in code.blocks.values_mut() {
