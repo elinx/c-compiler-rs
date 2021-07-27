@@ -67,7 +67,7 @@ impl DomTree {
                 }
                 let mut idom = None;
                 for bid_prev in reverse_cfg.get(bid).unwrap() {
-                    if *bid_prev != bid_init || idoms.get(bid_prev).is_some() {
+                    if *bid_prev == bid_init || idoms.get(bid_prev).is_some() {
                         idom = Some(DomTree::intersect(
                             idom,
                             *bid_prev,
@@ -97,7 +97,7 @@ impl DomTree {
         }
 
         let mut frontiers = HashMap::new();
-        for (bid, prevs) in cfg {
+        for (bid, prevs) in reverse_cfg {
             // only consider joinable nodes
             if prevs.len() <= 1 {
                 continue;
@@ -119,7 +119,14 @@ impl DomTree {
     }
 
     fn dominates(idoms: &HashMap<BlockId, BlockId>, runner: BlockId, bid: BlockId) -> bool {
-        *idoms.get(&bid).unwrap() == runner
+        let mut bid = bid;
+        while let Some(&parent) = idoms.get(&bid) {
+            if parent == runner {
+                return true;
+            }
+            bid = parent;
+        }
+        false
     }
 
     fn intersect(
@@ -155,12 +162,18 @@ enum OperandVar {
 impl OperandVar {
     pub fn lookup(
         &self,
-        _dtype: &Dtype,
-        _phinode_indices: &HashMap<(usize, BlockId), usize>,
+        dtype: &Dtype,
+        phinode_indices: &HashMap<(usize, BlockId), usize>,
     ) -> Operand {
         match self {
-            OperandVar::Operand(_) => todo!(),
-            OperandVar::Phi(_key) => todo!(),
+            OperandVar::Operand(operand) => operand.clone(),
+            OperandVar::Phi(var) => {
+                if let Some(index) = phinode_indices.get(var) {
+                    Operand::register(RegisterId::arg(var.1, *index), dtype.clone())
+                } else {
+                    Operand::constant(Constant::undef(dtype.clone()))
+                }
+            }
         }
     }
 }
@@ -371,7 +384,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                                     continue;
                                 }
                                 let bid_join = join_table.lookup(*aid, *bid);
-                                let end_value_join = end_values.get(&(*aid, *bid)).cloned();
+                                let end_value_join = end_values.get(&(*aid, bid_join)).cloned();
                                 let var = end_values.entry((*aid, *bid)).or_insert_with(|| {
                                     end_value_join.unwrap_or_else(|| {
                                         phinode_indices.insert((*aid, bid_join));
@@ -388,6 +401,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                 }
             }
         }
+        dbg!(&replaces, &phinode_indices, &end_values);
 
         // generates phinodes recursively
         let mut phinode_visited = phinode_indices;
@@ -399,15 +413,18 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
             if let Some(prevs) = reverse_cfg.get(&bid) {
                 for bid_prev in prevs {
                     let var_prev = (aid, *bid_prev);
-                    let end_value = end_values.get(&var_prev).cloned().unwrap_or_else(|| {
-                        let bid_prev_phinode = join_table.lookup(aid, *bid_prev);
-                        let var_prev_phinode = (aid, bid_prev_phinode);
-                        if phinode_visited.insert(var_prev_phinode) {
-                            phinode_stack.push(var_prev_phinode);
-                        }
-                        OperandVar::Phi(var_prev_phinode)
+                    let bid_prev_phinode = join_table.lookup(aid, *bid_prev);
+                    let var_prev_phinode = (aid, bid_prev_phinode);
+                    let end_value_prev_join = end_values.get(&var_prev_phinode).cloned();
+                    let end_value = end_values.entry(var_prev).or_insert_with(|| {
+                        end_value_prev_join.unwrap_or_else(|| {
+                            if phinode_visited.insert(var_prev_phinode) {
+                                phinode_stack.push(var_prev_phinode);
+                            }
+                            OperandVar::Phi(var_prev_phinode)
+                        })
                     });
-                    cases.insert(*bid_prev, end_value);
+                    cases.insert(*bid_prev, end_value.clone());
                 }
                 phinodes.insert(
                     (aid, bid),
@@ -415,6 +432,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                 );
             }
         }
+        dbg!(&phinodes);
 
         // insert phinodes
         let mut phinode_indices = HashMap::<(usize, BlockId), usize>::new();
@@ -427,6 +445,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                 .push(Named::new(name.cloned(), dtype.clone()));
             phinode_indices.insert((*aid, *bid), index);
         }
+        dbg!(&phinode_indices);
 
         // insert phinode arguments
         for ((aid, bid), (dtype, phinode)) in &phinodes {

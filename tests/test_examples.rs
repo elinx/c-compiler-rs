@@ -156,11 +156,11 @@ fn test_examples_mem2reg() {
         &mut Mem2reg::default(),
     );
 
-    test_opt_between_dirs(
-        &Path::new("examples/ir1"),
-        &Path::new("examples/ir2"),
-        &mut Mem2reg::default(),
-    );
+    // test_opt_between_dirs(
+    //     &Path::new("examples/ir1"),
+    //     &Path::new("examples/ir2"),
+    //     &mut Mem2reg::default(),
+    // );
 }
 
 #[test]

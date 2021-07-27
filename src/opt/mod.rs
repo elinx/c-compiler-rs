@@ -67,7 +67,10 @@ where
     fn optimize(&mut self, code: &mut ir::TranslationUnit) -> bool {
         code.decls
             .iter_mut()
-            .map(|(_, decl)| self.optimize(decl))
+            .map(|(name, decl)| {
+                println!("function: {} ==============================", name);
+                self.optimize(decl)
+            })
             .fold(false, |l, r| l || r)
     }
 }
