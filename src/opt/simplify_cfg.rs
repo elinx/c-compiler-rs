@@ -221,7 +221,10 @@ impl Block {
         }
         match &mut self.exit {
             // TODO: JumpArg apply transform
-            // BlockExit::Jump { arg } => todo!(),
+            BlockExit::Jump { arg } => arg
+                .args
+                .iter_mut()
+                .for_each(|operand| *operand = transform_operand(operand)),
             BlockExit::ConditionalJump { condition, .. } => {
                 *condition = transform_operand(condition)
             }
