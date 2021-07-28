@@ -459,6 +459,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                         arg.args.push(operand_prev.clone());
                     }
                 });
+                dbg!(&bid_prev, &block_prev.exit);
             }
         }
 
