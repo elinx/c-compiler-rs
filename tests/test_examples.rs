@@ -151,10 +151,15 @@ fn test_examples_simplify_cfg() {
 #[test]
 fn test_examples_mem2reg() {
     test_opt(
-        &Path::new("examples/ir1/gcd.ir"),
-        &Path::new("examples/ir2/gcd.ir"),
+        &Path::new("examples/ir1/fib5.ir"),
+        &Path::new("examples/ir2/fib5.ir"),
         &mut Mem2reg::default(),
     );
+    // test_opt(
+    //     &Path::new("examples/ir1/gcd.ir"),
+    //     &Path::new("examples/ir2/gcd.ir"),
+    //     &mut Mem2reg::default(),
+    // );
 
     // test_opt(
     //     &Path::new("examples/mem2reg/mem2reg.input.ir"),
