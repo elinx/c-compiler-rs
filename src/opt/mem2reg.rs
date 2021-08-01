@@ -332,7 +332,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
         let graph = make_graph(code);
         let reverse_cfg = reverse_cfg(&graph);
         let dom_tree = DomTree::new(code.bid_init, &graph, &reverse_cfg);
-        /*
+        // /*
         // `dot` format for visualization of cfg
         println!("digraph G {{");
         for (from, adjs) in graph.iter() {
@@ -350,8 +350,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
         dbg!(&graph);
         dbg!(&reverse_cfg);
         dbg!(&dom_tree);
-        */
-
+        // */
         let joins_map: HashMap<usize, HashSet<BlockId>> = stores
             .iter()
             .filter(|(aid, _)| !inpromotable.contains(*aid))
@@ -420,6 +419,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                                         }
                                     }
                                 };
+                                end_values.insert((*aid, *bid), var.clone());
                                 let result =
                                     replaces.insert(RegisterId::temp(*bid, i), var.clone());
                                 assert_eq!(result, None);
@@ -430,7 +430,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                 }
             }
         }
-        // dbg!(&replaces, &phinode_indices, &end_values);
+        dbg!(&replaces, &phinode_indices, &end_values);
 
         // generates phinodes recursively
         let mut phinode_visited = phinode_indices;
@@ -474,6 +474,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                     //         OperandVar::Phi(var_prev_phinode)
                     //     })
                     // });
+                    // end_values.insert((*aid, *bid), end_value);
                     cases.insert(*bid_prev, end_value.clone());
                 }
                 phinodes.insert(
@@ -495,7 +496,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                 .push(Named::new(name.cloned(), dtype.clone()));
             phinode_indices.insert((*aid, *bid), index);
         }
-        // dbg!(&phinode_indices);
+        dbg!(&phinode_indices);
 
         // insert phinode arguments
         for ((aid, bid), (dtype, phinode)) in &phinodes {
@@ -514,7 +515,8 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
         }
 
         // replace the values loaded from promotable allocations
-        for (_, block) in &mut code.blocks {
+        for (bid, block) in &mut code.blocks {
+            dbg!(bid);
             block.walk(|operand| {
                 if let Some((rid, dtype)) = operand.get_register() {
                     if let Some(operand_var) = replaces.get(&rid) {

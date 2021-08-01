@@ -225,8 +225,20 @@ impl Block {
                 .args
                 .iter_mut()
                 .for_each(|operand| *operand = transform_operand(operand)),
-            BlockExit::ConditionalJump { condition, .. } => {
-                *condition = transform_operand(condition)
+            BlockExit::ConditionalJump {
+                condition,
+                arg_then,
+                arg_else,
+            } => {
+                *condition = transform_operand(condition);
+                arg_then
+                    .args
+                    .iter_mut()
+                    .for_each(|operand| *operand = transform_operand(operand));
+                arg_else
+                    .args
+                    .iter_mut()
+                    .for_each(|operand| *operand = transform_operand(operand))
             }
             BlockExit::Switch { value, .. } => *value = transform_operand(value),
             BlockExit::Return { value } => *value = transform_operand(value),
