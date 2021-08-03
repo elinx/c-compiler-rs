@@ -392,7 +392,13 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                                 if inpromotable.contains(aid) {
                                     continue;
                                 }
-                                end_values.insert((*aid, *bid), OperandVar::Operand(value.clone()));
+                                let mut end_value = OperandVar::Operand(value.clone());
+                                if let Some((rid, _)) = value.get_register() {
+                                    if let Some(operand) = replaces.get(rid) {
+                                        end_value = operand.clone();
+                                    }
+                                }
+                                end_values.insert((*aid, *bid), end_value);
                             }
                         }
                     }
