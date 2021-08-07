@@ -150,12 +150,7 @@ impl DeadcodeInner {
             }
         }
         self.modify_affected_operands(code, &replaces);
-        // delete unused allocation
-        to_delete.sort();
-        to_delete.iter().rev().for_each(|aid| {
-            code.allocations.remove(*aid);
-        });
-        !to_delete.is_empty()
+        self.delete_allocas(code, &mut to_delete)
     }
 
     fn delete_dead_instr(
@@ -186,12 +181,7 @@ impl DeadcodeInner {
             }
         }
         self.modify_affected_operands(code, &replaces);
-        // delete unused allocation
-        to_delete.sort();
-        to_delete.iter().rev().for_each(|(bid, iid)| {
-            code.blocks.get_mut(bid).unwrap().instructions.remove(*iid);
-        });
-        !to_delete.is_empty()
+        self.delete_instructions(code, &mut to_delete)
     }
 
     fn delete_nops(&self, code: &mut FunctionDefinition, nops: &HashSet<RegisterId>) -> bool {
@@ -225,11 +215,7 @@ impl DeadcodeInner {
             }
         }
         self.modify_affected_operands(code, &replaces);
-        to_delete.sort();
-        to_delete.iter().rev().for_each(|(bid, iid)| {
-            code.blocks.get_mut(bid).unwrap().instructions.remove(*iid);
-        });
-        !to_delete.is_empty()
+        self.delete_instructions(code, &mut to_delete)
     }
 
     fn modify_affected_operands(
@@ -247,5 +233,25 @@ impl DeadcodeInner {
                 operand.clone()
             })
         }
+    }
+
+    fn delete_instructions(
+        &self,
+        code: &mut FunctionDefinition,
+        to_delete: &mut Vec<(BlockId, usize)>,
+    ) -> bool {
+        to_delete.sort();
+        to_delete.iter().rev().for_each(|(bid, iid)| {
+            code.blocks.get_mut(bid).unwrap().instructions.remove(*iid);
+        });
+        !to_delete.is_empty()
+    }
+
+    fn delete_allocas(&self, code: &mut FunctionDefinition, to_delete: &mut Vec<usize>) -> bool {
+        to_delete.sort();
+        to_delete.iter().rev().for_each(|aid| {
+            code.allocations.remove(*aid);
+        });
+        !to_delete.is_empty()
     }
 }
