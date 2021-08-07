@@ -240,18 +240,24 @@ impl DeadcodeInner {
         code: &mut FunctionDefinition,
         to_delete: &mut Vec<(BlockId, usize)>,
     ) -> bool {
-        to_delete.sort();
-        to_delete.iter().rev().for_each(|(bid, iid)| {
+        delete_op(to_delete, |(bid, iid)| {
             code.blocks.get_mut(bid).unwrap().instructions.remove(*iid);
-        });
-        !to_delete.is_empty()
+        })
     }
 
     fn delete_allocas(&self, code: &mut FunctionDefinition, to_delete: &mut Vec<usize>) -> bool {
-        to_delete.sort();
-        to_delete.iter().rev().for_each(|aid| {
+        delete_op(to_delete, |aid| {
             code.allocations.remove(*aid);
-        });
-        !to_delete.is_empty()
+        })
     }
+}
+
+fn delete_op<T, DelFunc>(to_delete: &mut Vec<T>, mut del_func: DelFunc) -> bool
+where
+    T: std::cmp::Ord,
+    DelFunc: FnMut(&T),
+{
+    to_delete.sort();
+    to_delete.iter().rev().for_each(|op| del_func(op));
+    !to_delete.is_empty()
 }
