@@ -315,6 +315,7 @@ pub fn test_asmgen(path: &Path) {
         .display()
         .to_string();
 
+    println!("asm_path: {}, bin_path: {}", asm_path_str, bin_path_str);
     // Create the assembly code
     let mut buffer = File::create(asm_path.as_path()).expect("need to success creating file");
     write(&asm, &mut buffer).unwrap();
@@ -329,6 +330,12 @@ pub fn test_asmgen(path: &Path) {
     {
         ::std::process::exit(SKIP_TEST);
     }
+    // let asm_content = Command::new("cat")
+    //     .arg(asm_path_str)
+    //     .output()
+    //     .expect("asm file");
+    // println!("1: {}", String::from_utf8_lossy(&asm_content.stdout));
+    // println!("2: {}", String::from_utf8_lossy(&asm_content.stderr));
 
     // Emulate the executable
     let mut child = Command::new("qemu-riscv64-static")

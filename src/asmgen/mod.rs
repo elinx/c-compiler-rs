@@ -1,16 +1,16 @@
 use core::panic;
 use std::collections::HashMap;
 use std::ops::Deref;
-use std::vec;
+use std::{mem, vec};
 
 use crate::asm::{
-    self, Function, IType, Immediate, Pseudo, Register, SType, Section, SymbolType, Variable,
+    self, Function, IType, Immediate, Pseudo, RType, Register, SType, Section, SymbolType, Variable,
 };
 use crate::asm::{Directive, SectionType};
-use crate::ir::{self, RegisterId};
+use crate::ir::{self, HasDtype, Named, RegisterId};
 use crate::ir::{Dtype, Operand};
 use crate::Translate;
-use lang_c::ast;
+use lang_c::ast::{self, BinaryOperator};
 
 #[derive(Default)]
 pub struct Asmgen {}
@@ -123,41 +123,53 @@ impl Asmgen {
     fn translate_function(
         &self,
         _label: &asm::Label,
-        signature: &ir::FunctionSignature,
+        _signature: &ir::FunctionSignature,
         definition: &Option<ir::FunctionDefinition>,
     ) -> Function {
-        dbg!(signature, definition);
         let mut func_context = FunctionContext {
             temp_register_offset: HashMap::new(),
             instrs: Vec::new(),
-            stack_offset: 0,
+            stack_offset: 16, // ra + fp
             rid: None,
         };
-        let blocks = Vec::new();
+        let mut blocks = Vec::new();
+
+        // explicitly insert a main label
+        blocks.push(asm::Block::new(Some(asm::Label("main".to_owned())), vec![]));
         if let Some(definition) = definition {
+            func_context.translate_allocations(&definition.allocations);
             for (bid, block) in &definition.blocks {
+                let block_label = asm::Label::new("", *bid);
                 for (iid, instr) in block.instructions.iter().enumerate() {
                     let rid = RegisterId::temp(*bid, iid);
                     func_context.set_rid(rid);
                     match &instr.deref() {
                         // ir::Instruction::Nop => todo!(),
-                        // ir::Instruction::BinOp { op, lhs, rhs, dtype } => todo!(),
+                        ir::Instruction::BinOp {
+                            op,
+                            lhs,
+                            rhs,
+                            dtype,
+                        } => func_context.translate_binop(op, lhs, rhs, dtype),
                         // ir::Instruction::UnaryOp { op, operand, dtype } => todo!(),
                         ir::Instruction::Store { ptr, value } => {
-                            func_context.translate_store(ptr, value);
+                            func_context.translate_store(ptr, value)
                         }
                         // ir::Instruction::Load { ptr } => todo!(),
                         // ir::Instruction::Call { callee, args, return_type } => todo!(),
                         ir::Instruction::TypeCast {
                             value,
                             target_dtype,
-                        } => {
-                            func_context.translate_typecast(value, target_dtype);
-                        }
+                        } => func_context.translate_typecast(value, target_dtype),
                         // ir::Instruction::GetElementPtr { ptr, offset, dtype } => todo!(),
                         _ => todo!(),
                     }
                 }
+                func_context.translate_block_exit(&block.exit);
+                blocks.push(asm::Block::new(
+                    Some(block_label),
+                    mem::replace(&mut func_context.instrs, Vec::new()),
+                ));
             }
         }
         Function::new(blocks)
@@ -169,17 +181,23 @@ impl FunctionContext {
         self.rid = Some(rid);
     }
 
-    fn insert(&mut self, instr: asm::Instruction) {
+    fn push_instr(&mut self, instr: asm::Instruction) {
         self.instrs.push(instr)
     }
 
-    fn push_accumulator(&mut self) {
-        let offset = self.stack_offset() as u64;
+    fn insert_instr(&mut self, index: usize, instr: asm::Instruction) {
+        self.instrs.insert(index, instr)
+    }
+
+    fn push_accumulator(&mut self, dtype: Dtype) {
+        let offset = self.stack_offset();
+        self.temp_register_offset
+            .insert(self.rid.as_ref().unwrap().clone(), offset);
         self.instrs.push(asm::Instruction::SType {
-            instr: SType::SD,
-            rs1: Register::Sp,
+            instr: SType::store(dtype),
+            rs1: Register::S0,
             rs2: Register::A0,
-            imm: Immediate::Value(offset),
+            imm: Immediate::Value((offset as i128 * -1) as u64),
         })
     }
 
@@ -188,7 +206,7 @@ impl FunctionContext {
         self.instrs.push(asm::Instruction::IType {
             instr: IType::LW,
             rd,
-            rs1: Register::Sp,
+            rs1: Register::S0,
             imm: Immediate::Value(0),
         })
     }
@@ -197,15 +215,83 @@ impl FunctionContext {
         self.instrs.push(asm::Instruction::IType {
             instr: IType::LW,
             rd,
-            rs1: Register::Sp,
-            imm: Immediate::Value(offset as u64),
+            rs1: Register::S0,
+            imm: Immediate::Value((offset as i128 * -1) as u64),
         })
     }
 
     fn stack_offset(&mut self) -> usize {
-        let offset = self.stack_offset;
+        // let offset = self.stack_offset;
         self.stack_offset += 8;
-        offset
+        self.stack_offset
+    }
+
+    #[allow(dead_code)]
+    fn translate_prologue(&mut self, stack_frame_size: u64) {
+        self.insert_instr(
+            0,
+            asm::Instruction::IType {
+                instr: IType::ADDI,
+                rd: Register::Sp,
+                rs1: Register::Sp,
+                imm: Immediate::Value((stack_frame_size as i128 * -1) as u64),
+            },
+        );
+        self.insert_instr(
+            1,
+            asm::Instruction::SType {
+                instr: SType::SD,
+                rs1: Register::Sp,
+                rs2: Register::Ra,
+                imm: Immediate::Value(stack_frame_size - 8),
+            },
+        );
+        self.insert_instr(
+            2,
+            asm::Instruction::SType {
+                instr: SType::SD,
+                rs1: Register::Sp,
+                rs2: Register::S0,
+                imm: Immediate::Value(stack_frame_size - 16),
+            },
+        );
+        self.insert_instr(
+            3,
+            asm::Instruction::IType {
+                instr: IType::ADDI,
+                rd: Register::S0,
+                rs1: Register::Sp,
+                imm: Immediate::Value(stack_frame_size),
+            },
+        )
+    }
+
+    #[allow(dead_code)]
+    fn translate_epilogue(&mut self, stack_frame_size: u64) {
+        self.push_instr(asm::Instruction::IType {
+            instr: IType::ADDI,
+            rd: Register::Sp,
+            rs1: Register::Sp,
+            imm: Immediate::Value(stack_frame_size),
+        });
+        self.push_instr(asm::Instruction::SType {
+            instr: SType::SD,
+            rs1: Register::Sp,
+            rs2: Register::Ra,
+            imm: Immediate::Value(stack_frame_size - 8),
+        });
+        self.push_instr(asm::Instruction::SType {
+            instr: SType::SD,
+            rs1: Register::Sp,
+            rs2: Register::S0,
+            imm: Immediate::Value(stack_frame_size - 16),
+        });
+        self.push_instr(asm::Instruction::IType {
+            instr: IType::ADDI,
+            rd: Register::S0,
+            rs1: Register::Sp,
+            imm: Immediate::Value(stack_frame_size),
+        })
     }
 
     fn translate_operand(&mut self, operand: &Operand) -> Value {
@@ -216,7 +302,7 @@ impl FunctionContext {
                 ir::Constant::Int { value, .. } => Value::Constant(*value as usize),
                 // ir::Constant::Float { value, width } => todo!(),
                 ir::Constant::GlobalVariable { name, .. } => {
-                    self.insert(asm::Instruction::Pseudo(Pseudo::La {
+                    self.push_instr(asm::Instruction::Pseudo(Pseudo::La {
                         rd: Register::T0,
                         symbol: asm::Label(name.to_owned()),
                     }));
@@ -249,21 +335,147 @@ impl FunctionContext {
                 } else {
                     panic!("unexpected data")
                 };
-                self.insert(asm::Instruction::IType {
+                self.push_instr(asm::Instruction::IType {
                     instr: IType::ADDI,
                     rd: Register::A0,
                     rs1: Register::Zero,
                     imm: Immediate::Value(val),
                 });
             }
-            Value::Register(_) => todo!(),
-            // Value::RegImm(_, _) => todo!(),
+            Value::Register(rs) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
+                rd: Register::A0,
+                rs,
+            })),
         }
-        self.push_accumulator();
+        self.push_accumulator(target_type.to_owned());
     }
 
     fn translate_store(&mut self, ptr: &Operand, value: &Operand) {
-        let value = self.translate_operand(value);
-        let ptr = self.translate_operand(ptr);
+        match self.translate_operand(value) {
+            Value::Constant(imm) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                rd: Register::A0,
+                imm: imm as u64,
+            })),
+            Value::Register(rs) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
+                rd: Register::A0,
+                rs,
+            })),
+        }
+        match self.translate_operand(ptr) {
+            Value::Register(rs1) => self.push_instr(asm::Instruction::SType {
+                instr: SType::store(ptr.dtype().get_pointer_inner().unwrap().clone()),
+                rs1,
+                rs2: Register::A0,
+                imm: Immediate::Value(0),
+            }),
+            _ => panic!("ptr operand of store should not be constant value"),
+        }
+    }
+
+    fn translate_binop(
+        &mut self,
+        op: &BinaryOperator,
+        lhs: &Operand,
+        rhs: &Operand,
+        dtype: &Dtype,
+    ) {
+        match op {
+            // BinaryOperator::Index => todo!(),
+            // BinaryOperator::Multiply => todo!(),
+            // BinaryOperator::Divide => todo!(),
+            // BinaryOperator::Modulo => todo!(),
+            // BinaryOperator::Plus => todo!(),
+            // BinaryOperator::Minus => todo!(),
+            // BinaryOperator::ShiftLeft => todo!(),
+            // BinaryOperator::ShiftRight => todo!(),
+            // BinaryOperator::Less => todo!(),
+            // BinaryOperator::Greater => todo!(),
+            // BinaryOperator::LessOrEqual => todo!(),
+            BinaryOperator::GreaterOrEqual => {
+                // value of lhs is in a0
+                match self.translate_operand(lhs) {
+                    Value::Constant(imm) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                        rd: Register::A0,
+                        imm: imm as u64,
+                    })),
+                    Value::Register(rs) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
+                        rd: Register::A0,
+                        rs,
+                    })),
+                }
+                // value of rhs is in t0
+                match self.translate_operand(rhs) {
+                    Value::Constant(imm) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                        rd: Register::T0,
+                        imm: imm as u64,
+                    })),
+                    Value::Register(_) => {}
+                }
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::Slt {
+                        is_signed: lhs.dtype().is_int_signed(),
+                    },
+                    rd: Register::A0,
+                    rs1: Register::A0,
+                    rs2: Some(Register::T0),
+                });
+                self.push_instr(asm::Instruction::IType {
+                    instr: IType::Xori,
+                    rd: Register::A0,
+                    rs1: Register::A0,
+                    imm: Immediate::Value(1),
+                })
+            }
+            // BinaryOperator::Equals => todo!(),
+            // BinaryOperator::NotEquals => todo!(),
+            // BinaryOperator::BitwiseAnd => todo!(),
+            // BinaryOperator::BitwiseXor => todo!(),
+            // BinaryOperator::BitwiseOr => todo!(),
+            // BinaryOperator::LogicalAnd => todo!(),
+            // BinaryOperator::LogicalOr => todo!(),
+            // BinaryOperator::Assign => todo!(),
+            // BinaryOperator::AssignMultiply => todo!(),
+            // BinaryOperator::AssignDivide => todo!(),
+            // BinaryOperator::AssignModulo => todo!(),
+            // BinaryOperator::AssignPlus => todo!(),
+            // BinaryOperator::AssignMinus => todo!(),
+            // BinaryOperator::AssignShiftLeft => todo!(),
+            // BinaryOperator::AssignShiftRight => todo!(),
+            // BinaryOperator::AssignBitwiseAnd => todo!(),
+            // BinaryOperator::AssignBitwiseXor => todo!(),
+            // BinaryOperator::AssignBitwiseOr => todo!(),
+            _ => todo!(),
+        }
+        self.push_accumulator(dtype.to_owned());
+    }
+
+    fn translate_block_exit(&mut self, exit: &ir::BlockExit) {
+        match exit {
+            // ir::BlockExit::Jump { arg } => todo!(),
+            // ir::BlockExit::ConditionalJump { condition, arg_then, arg_else } => todo!(),
+            // ir::BlockExit::Switch { value, default, cases } => todo!(),
+            ir::BlockExit::Return { value } => {
+                match self.translate_operand(value) {
+                    Value::Constant(imm) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                        rd: Register::A0,
+                        imm: imm as u64,
+                    })),
+                    Value::Register(rs) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
+                        rd: Register::A0,
+                        rs,
+                    })),
+                }
+                let stack_frame_size = self.stack_offset as u64;
+                self.translate_prologue(stack_frame_size);
+                self.translate_epilogue(stack_frame_size);
+                self.push_instr(asm::Instruction::Pseudo(Pseudo::Ret));
+            }
+            // ir::BlockExit::Unreachable => todo!(),
+            _ => todo!(),
+        }
+    }
+
+    fn translate_allocations(&mut self, allocations: &Vec<Named<Dtype>>) {
+        dbg!(allocations);
     }
 }
