@@ -155,7 +155,9 @@ impl Asmgen {
                         ir::Instruction::Store { ptr, value } => {
                             func_context.translate_store(ptr, value)
                         }
-                        // ir::Instruction::Load { ptr } => todo!(),
+                        ir::Instruction::Load { ptr } => {
+                            func_context.translate_load(ptr, &instr.dtype())
+                        }
                         // ir::Instruction::Call { callee, args, return_type } => todo!(),
                         ir::Instruction::TypeCast {
                             value,
@@ -190,7 +192,14 @@ impl FunctionContext {
     }
 
     fn push_accumulator(&mut self, dtype: Dtype) {
-        let offset = self.stack_offset();
+        // TODO: calculate data type size using dtype
+        let size = match dtype {
+            ir::Dtype::Int { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
+            ir::Dtype::Float { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
+            ir::Dtype::Pointer { .. } => ir::Dtype::SIZE_OF_POINTER,
+            _ => todo!("data size failed: {:?}", dtype),
+        };
+        let offset = self.stack_offset(size);
         self.temp_register_offset
             .insert(self.rid.as_ref().unwrap().clone(), offset);
         self.instrs.push(asm::Instruction::SType {
@@ -220,9 +229,8 @@ impl FunctionContext {
         })
     }
 
-    fn stack_offset(&mut self) -> usize {
-        // let offset = self.stack_offset;
-        self.stack_offset += 8;
+    fn stack_offset(&mut self, data_size: usize) -> usize {
+        self.stack_offset += data_size;
         self.stack_offset
     }
 
@@ -269,26 +277,20 @@ impl FunctionContext {
     #[allow(dead_code)]
     fn translate_epilogue(&mut self, stack_frame_size: u64) {
         self.push_instr(asm::Instruction::IType {
-            instr: IType::ADDI,
-            rd: Register::Sp,
+            instr: IType::LD,
+            rd: Register::S0,
             rs1: Register::Sp,
-            imm: Immediate::Value(stack_frame_size),
-        });
-        self.push_instr(asm::Instruction::SType {
-            instr: SType::SD,
-            rs1: Register::Sp,
-            rs2: Register::Ra,
-            imm: Immediate::Value(stack_frame_size - 8),
-        });
-        self.push_instr(asm::Instruction::SType {
-            instr: SType::SD,
-            rs1: Register::Sp,
-            rs2: Register::S0,
             imm: Immediate::Value(stack_frame_size - 16),
         });
         self.push_instr(asm::Instruction::IType {
+            instr: IType::LD,
+            rd: Register::Ra,
+            rs1: Register::Sp,
+            imm: Immediate::Value(stack_frame_size - 8),
+        });
+        self.push_instr(asm::Instruction::IType {
             instr: IType::ADDI,
-            rd: Register::S0,
+            rd: Register::Sp,
             rs1: Register::Sp,
             imm: Immediate::Value(stack_frame_size),
         })
@@ -312,8 +314,22 @@ impl FunctionContext {
             },
             Operand::Register { rid, .. } => {
                 if let Some(offset) = self.temp_register_offset.get(rid).cloned() {
-                    self.pop_accumulator_at(Register::T0, offset);
-                    Value::Register(Register::T0)
+                    match rid {
+                        RegisterId::Local { .. } => {
+                            self.push_instr(asm::Instruction::IType {
+                                instr: IType::ADDI,
+                                rd: Register::T0,
+                                rs1: Register::S0,
+                                imm: Immediate::Value((offset as i128 * -1) as u64),
+                            });
+                            Value::Register(Register::T0)
+                        }
+                        RegisterId::Arg { .. } => todo!(),
+                        RegisterId::Temp { .. } => {
+                            self.pop_accumulator_at(Register::T0, offset);
+                            Value::Register(Register::T0)
+                        }
+                    }
                 } else {
                     panic!("can't find temp register");
                 }
@@ -476,6 +492,25 @@ impl FunctionContext {
     }
 
     fn translate_allocations(&mut self, allocations: &Vec<Named<Dtype>>) {
-        dbg!(allocations);
+        for (aid, dtype) in allocations.iter().enumerate() {
+            let rid = RegisterId::local(aid);
+            self.set_rid(rid);
+            self.push_accumulator(dtype.deref().clone());
+        }
+    }
+
+    fn translate_load(&mut self, ptr: &Operand, dtype: &Dtype) {
+        match self.translate_operand(ptr) {
+            Value::Constant(_) => panic!("can't load value from constant"),
+            Value::Register(rs1) => {
+                self.push_instr(asm::Instruction::IType {
+                    instr: IType::load(dtype.to_owned()),
+                    rd: Register::A0,
+                    rs1,
+                    imm: Immediate::Value(0),
+                });
+            }
+        }
+        self.push_accumulator(dtype.to_owned());
     }
 }

@@ -336,7 +336,7 @@ pub fn test_asmgen(path: &Path) {
         .expect("asm file");
     assert!(asm_content.status.success());
     println!("asm: \n{}", String::from_utf8_lossy(&asm_content.stdout));
-    println!("error: {}", String::from_utf8_lossy(&asm_content.stderr));
+    println!("{}", String::from_utf8_lossy(&asm_content.stderr));
 
     // Emulate the executable
     let mut child = Command::new("qemu-riscv64-static")
