@@ -143,29 +143,7 @@ impl Asmgen {
                 for (iid, instr) in block.instructions.iter().enumerate() {
                     let rid = RegisterId::temp(*bid, iid);
                     func_context.set_rid(rid);
-                    match &instr.deref() {
-                        // ir::Instruction::Nop => todo!(),
-                        ir::Instruction::BinOp {
-                            op,
-                            lhs,
-                            rhs,
-                            dtype,
-                        } => func_context.translate_binop(op, lhs, rhs, dtype),
-                        // ir::Instruction::UnaryOp { op, operand, dtype } => todo!(),
-                        ir::Instruction::Store { ptr, value } => {
-                            func_context.translate_store(ptr, value)
-                        }
-                        ir::Instruction::Load { ptr } => {
-                            func_context.translate_load(ptr, &instr.dtype())
-                        }
-                        // ir::Instruction::Call { callee, args, return_type } => todo!(),
-                        ir::Instruction::TypeCast {
-                            value,
-                            target_dtype,
-                        } => func_context.translate_typecast(value, target_dtype),
-                        // ir::Instruction::GetElementPtr { ptr, offset, dtype } => todo!(),
-                        _ => todo!(),
-                    }
+                    func_context.translate_instruction(&instr.deref());
                 }
                 func_context.translate_block_exit(&block.exit);
                 blocks.push(asm::Block::new(
@@ -238,6 +216,28 @@ impl FunctionContext {
     fn stack_offset(&mut self, data_size: usize) -> usize {
         self.stack_offset += data_size;
         self.stack_offset
+    }
+
+    fn translate_instruction(&mut self, instr: &ir::Instruction) {
+        match instr {
+            // ir::Instruction::Nop => todo!(),
+            ir::Instruction::BinOp {
+                op,
+                lhs,
+                rhs,
+                dtype,
+            } => self.translate_binop(op, lhs, rhs, dtype),
+            // ir::Instruction::UnaryOp { op, operand, dtype } => todo!(),
+            ir::Instruction::Store { ptr, value } => self.translate_store(ptr, value),
+            ir::Instruction::Load { ptr } => self.translate_load(ptr, &instr.dtype()),
+            // ir::Instruction::Call { callee, args, return_type } => todo!(),
+            ir::Instruction::TypeCast {
+                value,
+                target_dtype,
+            } => self.translate_typecast(value, target_dtype),
+            // ir::Instruction::GetElementPtr { ptr, offset, dtype } => todo!(),
+            _ => todo!(),
+        }
     }
 
     #[allow(dead_code)]
