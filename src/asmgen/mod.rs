@@ -179,6 +179,12 @@ impl Asmgen {
 }
 
 impl FunctionContext {
+    pub const STACK_ALIGNMENT_BYTE: usize = 16;
+
+    fn align_to(base: usize, align: usize) -> usize {
+        ((base + align - 1) / align) * align
+    }
+
     fn set_rid(&mut self, rid: RegisterId) {
         self.rid = Some(rid);
     }
@@ -220,9 +226,9 @@ impl FunctionContext {
         })
     }
 
-    fn pop_accumulator_at(&mut self, rd: Register, offset: usize) {
+    fn pop_accumulator_at(&mut self, rd: Register, offset: usize, dtype: Dtype) {
         self.instrs.push(asm::Instruction::IType {
-            instr: IType::LW,
+            instr: IType::load(dtype),
             rd,
             rs1: Register::S0,
             imm: Immediate::Value((offset as i128 * -1) as u64),
@@ -312,7 +318,7 @@ impl FunctionContext {
                 }
                 _ => todo!(),
             },
-            Operand::Register { rid, .. } => {
+            Operand::Register { rid, dtype } => {
                 if let Some(offset) = self.temp_register_offset.get(rid).cloned() {
                     match rid {
                         RegisterId::Local { .. } => {
@@ -326,7 +332,7 @@ impl FunctionContext {
                         }
                         RegisterId::Arg { .. } => todo!(),
                         RegisterId::Temp { .. } => {
-                            self.pop_accumulator_at(Register::T0, offset);
+                            self.pop_accumulator_at(Register::T0, offset, dtype.clone());
                             Value::Register(Register::T0)
                         }
                     }
@@ -481,7 +487,10 @@ impl FunctionContext {
                         rs,
                     })),
                 }
-                let stack_frame_size = self.stack_offset as u64;
+                let stack_frame_size = FunctionContext::align_to(
+                    self.stack_offset,
+                    FunctionContext::STACK_ALIGNMENT_BYTE,
+                ) as u64;
                 self.translate_prologue(stack_frame_size);
                 self.translate_epilogue(stack_frame_size);
                 self.push_instr(asm::Instruction::Pseudo(Pseudo::Ret));

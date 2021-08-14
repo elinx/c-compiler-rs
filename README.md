@@ -155,3 +155,14 @@ make run
 
 - Submit the corresponding files to [gg.kaist.ac.kr](https://gg.kaist.ac.kr).
 - Run `./scripts/make-submissions.sh` to generate `hw3.zip` to `hw6.zip`, which you should submit for homework 3 to 6.
+
+## Debug
+
+- start qemu gdbserver with `qemu-riscv64-static -g 33669 ./a.out`
+- connect qemu gdbserver with following commands:
+    ```shell
+        $ gdb-multiarch ./a.out
+            > target remote 127.0.0.1:33669
+            > layout regs
+            > layout asm
+    ```
