@@ -140,11 +140,12 @@ impl Asmgen {
             func_context.translate_allocations(&definition.allocations);
             for (bid, block) in &definition.blocks {
                 let block_label = asm::Label::new("", *bid);
-                for (iid, instr) in block.instructions.iter().enumerate() {
-                    let rid = RegisterId::temp(*bid, iid);
-                    func_context.set_rid(rid);
-                    func_context.translate_instruction(&instr.deref());
-                }
+                // for (iid, instr) in block.instructions.iter().enumerate() {
+                //     let rid = RegisterId::temp(*bid, iid);
+                //     func_context.set_rid(rid);
+                //     func_context.translate_instruction(&instr.deref());
+                // }
+                func_context.translate_instructions(bid, &block.instructions);
                 func_context.translate_block_exit(&block.exit);
                 blocks.push(asm::Block::new(
                     Some(block_label),
@@ -216,6 +217,18 @@ impl FunctionContext {
     fn stack_offset(&mut self, data_size: usize) -> usize {
         self.stack_offset += data_size;
         self.stack_offset
+    }
+
+    fn translate_instructions(
+        &mut self,
+        bid: &ir::BlockId,
+        instructions: &Vec<Named<ir::Instruction>>,
+    ) {
+        for (iid, instr) in instructions.iter().enumerate() {
+            let rid = RegisterId::temp(*bid, iid);
+            self.set_rid(rid);
+            self.translate_instruction(&instr.deref());
+        }
     }
 
     fn translate_instruction(&mut self, instr: &ir::Instruction) {
