@@ -80,15 +80,15 @@ const ASMGEN_SMALL_TEST_IGNORE_LIST: [&str; 10] = [
     "temp2.ir",
 ];
 
-const ASM_GEN_DIR: [&str; 1] = ["examples/ir0"];
+// const ASM_GEN_DIR: [&str; 1] = ["examples/ir0"];
 
-const ASM_GEN_FILE: [&str; 5] = [
-    "typecast.ir",
-    "typedef.ir",
-    "fibonacci.ir",
-    "bar.ir",
-    "cmp.ir",
-];
+// const ASM_GEN_FILE: [&str; 5] = [
+//     "typecast.ir",
+//     "typedef.ir",
+//     "fibonacci.ir",
+//     "bar.ir",
+//     "cmp.ir",
+// ];
 
 #[test]
 fn test_examples_write_c() {
@@ -216,15 +216,16 @@ fn test_examples_gvn() {
 
 #[test]
 fn test_examples_asmgen_small() {
-    for dir in ASM_GEN_DIR.iter() {
+    for dir in ASMGEN_TEST_DIR_LIST.iter() {
+        // for dir in ASM_GEN_DIR.iter() {
         test_dir(Path::new(dir), &OsStr::new("ir"), |path| {
             let file_name = &path
                 .file_name()
                 .expect("`path` must have file name")
                 .to_str()
                 .expect("must be transformed to `&str`");
-            // if !ASMGEN_SMALL_TEST_IGNORE_LIST.contains(file_name) {
-            if ASM_GEN_FILE.contains(file_name) {
+            if !ASMGEN_SMALL_TEST_IGNORE_LIST.contains(file_name) {
+                // if ASM_GEN_FILE.contains(file_name) {
                 test_asmgen(path)
             }
         });

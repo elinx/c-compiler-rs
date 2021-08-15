@@ -557,8 +557,22 @@ impl FunctionContext {
                     rs2: Some(Register::T0),
                 });
             }
-            // BinaryOperator::ShiftLeft => todo!(),
-            // BinaryOperator::ShiftRight => todo!(),
+            BinaryOperator::ShiftLeft => {
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::sll(lhs.dtype()),
+                    rd: Register::A0,
+                    rs1: Register::A0,
+                    rs2: Some(Register::T0),
+                });
+            }
+            BinaryOperator::ShiftRight => {
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::srl(lhs.dtype()),
+                    rd: Register::A0,
+                    rs1: Register::A0,
+                    rs2: Some(Register::T0),
+                });
+            }
             BinaryOperator::Less => {
                 self.push_instr(asm::Instruction::RType {
                     instr: RType::Slt {
@@ -609,12 +623,45 @@ impl FunctionContext {
                 self.push_instr(asm::Instruction::Pseudo(Pseudo::Seqz {
                     rd: Register::A0,
                     rs: Register::A0,
-                }))
+                }));
             }
-            // BinaryOperator::NotEquals => todo!(),
-            // BinaryOperator::BitwiseAnd => todo!(),
-            // BinaryOperator::BitwiseXor => todo!(),
-            // BinaryOperator::BitwiseOr => todo!(),
+            BinaryOperator::NotEquals => {
+                // a != b => (a ^ b) != 0
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::Xor,
+                    rd: Register::A0,
+                    rs1: Register::A0,
+                    rs2: Some(Register::T0),
+                });
+                self.push_instr(asm::Instruction::Pseudo(Pseudo::Snez {
+                    rd: Register::A0,
+                    rs: Register::A0,
+                }));
+            }
+            BinaryOperator::BitwiseAnd => {
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::And,
+                    rd: Register::A0,
+                    rs1: Register::A0,
+                    rs2: Some(Register::T0),
+                });
+            }
+            BinaryOperator::BitwiseXor => {
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::Xor,
+                    rd: Register::A0,
+                    rs1: Register::A0,
+                    rs2: Some(Register::T0),
+                });
+            }
+            BinaryOperator::BitwiseOr => {
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::Or,
+                    rd: Register::A0,
+                    rs1: Register::A0,
+                    rs2: Some(Register::T0),
+                });
+            }
             // BinaryOperator::LogicalAnd => todo!(),
             // BinaryOperator::LogicalOr => todo!(),
             // BinaryOperator::Assign => todo!(),
@@ -666,7 +713,32 @@ impl FunctionContext {
                     Value::Function(_) => todo!(),
                 }
             }
-            // ir::BlockExit::Switch { value, default, cases } => todo!(),
+            ir::BlockExit::Switch {
+                value,
+                default,
+                cases,
+            } => match self.translate_operand(value) {
+                Value::Constant(_) => todo!(),
+                Value::Register(rs1) => {
+                    cases.iter().for_each(|(constant, jump)| {
+                        let imm = constant.get_int().unwrap().0 as u64;
+                        self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                            rd: Register::A0,
+                            imm,
+                        }));
+                        self.push_instr(asm::Instruction::BType {
+                            instr: BType::Beq,
+                            rs1,
+                            rs2: Register::A0,
+                            imm: asm::Label::new(name, jump.deref().bid),
+                        });
+                    });
+                    self.push_instr(asm::Instruction::Pseudo(Pseudo::J {
+                        offset: asm::Label::new(name, default.deref().bid),
+                    }));
+                }
+                Value::Function(_) => todo!(),
+            },
             ir::BlockExit::Return { value } => {
                 match self.translate_operand(value) {
                     Value::Constant(imm) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
@@ -760,7 +832,13 @@ impl FunctionContext {
                         imm: ((val as i128) * -1) as u64,
                     }));
                 }
-                Value::Register(_) => todo!(),
+                Value::Register(rs) => {
+                    self.push_instr(asm::Instruction::Pseudo(Pseudo::neg(
+                        dtype.clone(),
+                        Register::A0,
+                        rs,
+                    )));
+                }
                 Value::Function(_) => todo!(),
             },
             // ast::UnaryOperator::Complement => todo!(),

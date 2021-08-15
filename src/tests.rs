@@ -315,7 +315,7 @@ pub fn test_asmgen(path: &Path) {
         .display()
         .to_string();
 
-    println!("asm_path: {}, bin_path: {}", asm_path_str, bin_path_str);
+    // println!("asm_path: {}, bin_path: {}", asm_path_str, bin_path_str);
     // Create the assembly code
     let mut buffer = File::create(asm_path.as_path()).expect("need to success creating file");
     write(&asm, &mut buffer).unwrap();
@@ -335,7 +335,7 @@ pub fn test_asmgen(path: &Path) {
         .output()
         .expect("asm file");
     assert!(asm_content.status.success());
-    println!("asm: \n{}", String::from_utf8_lossy(&asm_content.stdout));
+    // println!("asm: \n{}", String::from_utf8_lossy(&asm_content.stdout));
     println!("{}", String::from_utf8_lossy(&asm_content.stderr));
     Command::new("cp")
         .arg(asm_path_str)
