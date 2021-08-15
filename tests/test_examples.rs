@@ -82,7 +82,13 @@ const ASMGEN_SMALL_TEST_IGNORE_LIST: [&str; 10] = [
 
 const ASM_GEN_DIR: [&str; 1] = ["examples/ir0"];
 
-const ASM_GEN_FILE: [&str; 4] = ["typecast.ir", "typedef.ir", "fibonacci.ir", "bar.ir"];
+const ASM_GEN_FILE: [&str; 5] = [
+    "typecast.ir",
+    "typedef.ir",
+    "fibonacci.ir",
+    "bar.ir",
+    "cmp.ir",
+];
 
 #[test]
 fn test_examples_write_c() {

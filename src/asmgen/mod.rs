@@ -1,4 +1,5 @@
 use core::panic;
+use std::cmp::max;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::{mem, vec};
@@ -23,6 +24,7 @@ struct FunctionContext {
     stack_frame_size: usize,
     rid: Option<RegisterId>,
     returns: Vec<usize>,
+    max_args_size: usize,
 }
 
 enum Value {
@@ -136,6 +138,7 @@ impl Asmgen {
             stack_frame_size: 16,
             rid: None,
             returns: Vec::new(),
+            max_args_size: 0,
         };
         let mut blocks = Vec::new();
 
@@ -197,6 +200,42 @@ impl FunctionContext {
         })
     }
 
+    fn push_phinode(&mut self, dtype: Dtype, offset: usize) -> usize {
+        self.temp_register_offset.insert(
+            self.rid.as_ref().unwrap().clone(),
+            (offset as i128 * -1) as usize,
+        );
+        let size = match dtype {
+            ir::Dtype::Int { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
+            ir::Dtype::Float { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
+            ir::Dtype::Pointer { .. } => ir::Dtype::SIZE_OF_POINTER,
+            _ => todo!("data size failed: {:?}", dtype),
+        };
+        let size = FunctionContext::align_to(size, 4); // align to word boundary
+        offset + size
+    }
+
+    fn push_arg(&mut self, dtype: Dtype, offset: usize) -> usize {
+        let size = match dtype {
+            ir::Dtype::Int { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
+            ir::Dtype::Float { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
+            ir::Dtype::Pointer { .. } => ir::Dtype::SIZE_OF_POINTER,
+            _ => todo!("data size failed: {:?}", dtype),
+        };
+        let size = FunctionContext::align_to(size, 4); // align to word boundary
+        self.instrs.push(asm::Instruction::SType {
+            instr: SType::store(dtype),
+            rs1: Register::Sp,
+            rs2: Register::A0,
+            imm: Immediate::Value(offset as u64),
+        });
+        offset + size
+    }
+
+    fn update_max_args_size(&mut self, size: usize) {
+        self.max_args_size = max(self.max_args_size, size);
+    }
+
     fn pop_accumulator_at(&mut self, rd: Register, offset: usize, dtype: Dtype) {
         self.instrs.push(asm::Instruction::IType {
             instr: IType::load(dtype),
@@ -212,7 +251,7 @@ impl FunctionContext {
     }
 
     fn update_stack_frame_size(&mut self, size: usize) {
-        self.stack_frame_size = size;
+        self.stack_frame_size = size + self.max_args_size;
     }
 
     fn add_return(&mut self, bid: usize) {
@@ -220,10 +259,11 @@ impl FunctionContext {
     }
 
     fn translate_phinodes(&mut self, bid: &ir::BlockId, phinodes: &Vec<Named<Dtype>>) {
+        let mut offset = 0;
         for (aid, dtype) in phinodes.iter().enumerate() {
             let rid = RegisterId::arg(bid.clone(), aid);
             self.set_rid(rid);
-            self.push_accumulator(dtype.deref().clone());
+            offset = self.push_phinode(dtype.deref().clone(), offset);
         }
     }
 
@@ -248,7 +288,9 @@ impl FunctionContext {
                 rhs,
                 dtype,
             } => self.translate_binop(op, lhs, rhs, dtype),
-            // ir::Instruction::UnaryOp { op, operand, dtype } => todo!(),
+            ir::Instruction::UnaryOp { op, operand, dtype } => {
+                self.translate_unary(op, operand, dtype)
+            }
             ir::Instruction::Store { ptr, value } => self.translate_store(ptr, value),
             ir::Instruction::Load { ptr } => self.translate_load(ptr, &instr.dtype()),
             ir::Instruction::Call {
@@ -527,7 +569,17 @@ impl FunctionContext {
                     rs2: Some(Register::T0),
                 });
             }
-            // BinaryOperator::Greater => todo!(),
+            BinaryOperator::Greater => {
+                // a > b => b < a
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::Slt {
+                        is_signed: lhs.dtype().is_int_signed(),
+                    },
+                    rd: Register::A0,
+                    rs1: Register::T0,
+                    rs2: Some(Register::A0),
+                });
+            }
             // BinaryOperator::LessOrEqual => todo!(),
             BinaryOperator::GreaterOrEqual => {
                 // a >= b => !(a < b) => (a < b) ^ 1
@@ -547,13 +599,17 @@ impl FunctionContext {
                 })
             }
             BinaryOperator::Equals => {
-                // a == b => (a ^ b) ^ 1
-                self.push_instr(asm::Instruction::IType {
-                    instr: IType::Xori,
+                // a == b => (a ^ b) == 0
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::Xor,
                     rd: Register::A0,
-                    rs1: Register::T0,
-                    imm: Immediate::Value(1),
-                })
+                    rs1: Register::A0,
+                    rs2: Some(Register::T0),
+                });
+                self.push_instr(asm::Instruction::Pseudo(Pseudo::Seqz {
+                    rd: Register::A0,
+                    rs: Register::A0,
+                }))
             }
             // BinaryOperator::NotEquals => todo!(),
             // BinaryOperator::BitwiseAnd => todo!(),
@@ -659,7 +715,25 @@ impl FunctionContext {
         self.push_accumulator(dtype.to_owned());
     }
 
-    fn translate_call(&mut self, callee: &Operand, _args: &Vec<Operand>, return_type: &Dtype) {
+    fn translate_call(&mut self, callee: &Operand, args: &Vec<Operand>, return_type: &Dtype) {
+        // push args in reverse order, eg arg1, arg0... based on Sp
+        let mut offset = 0;
+        args.iter().for_each(|arg| {
+            let val = self.translate_operand(arg);
+            match val {
+                Value::Constant(imm) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                    rd: Register::A0,
+                    imm: imm as u64,
+                })),
+                Value::Register(rs) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
+                    rd: Register::A0,
+                    rs,
+                })),
+                Value::Function(_) => todo!(),
+            }
+            offset = self.push_arg(arg.dtype(), offset);
+        });
+        self.update_max_args_size(offset);
         match self.translate_operand(callee) {
             Value::Function(offset) => {
                 self.push_instr(asm::Instruction::Pseudo(Pseudo::Call { offset }))
@@ -667,5 +741,33 @@ impl FunctionContext {
             _ => todo!(),
         }
         self.push_accumulator(return_type.clone());
+    }
+
+    fn translate_unary(&mut self, op: &ast::UnaryOperator, operand: &Operand, dtype: &Dtype) {
+        let val = self.translate_operand(operand);
+        match op {
+            // ast::UnaryOperator::PostIncrement => todo!(),
+            // ast::UnaryOperator::PostDecrement => todo!(),
+            // ast::UnaryOperator::PreIncrement => todo!(),
+            // ast::UnaryOperator::PreDecrement => todo!(),
+            // ast::UnaryOperator::Address => todo!(),
+            // ast::UnaryOperator::Indirection => todo!(),
+            // ast::UnaryOperator::Plus => todo!(),
+            ast::UnaryOperator::Minus => match val {
+                Value::Constant(val) => {
+                    self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                        rd: Register::A0,
+                        imm: ((val as i128) * -1) as u64,
+                    }));
+                }
+                Value::Register(_) => todo!(),
+                Value::Function(_) => todo!(),
+            },
+            // ast::UnaryOperator::Complement => todo!(),
+            // ast::UnaryOperator::Negate => todo!(),
+            // ast::UnaryOperator::SizeOf => todo!(),
+            _ => todo!("unary op: {:?}", op),
+        }
+        self.push_accumulator(dtype.clone());
     }
 }
