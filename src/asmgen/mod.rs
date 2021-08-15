@@ -91,7 +91,6 @@ impl Asmgen {
         dtype: &Dtype,
         initializer: &Option<ast::Initializer>,
     ) -> Variable {
-        // TODO: get value from initializer
         let val = match initializer {
             Some(initializer) => match initializer {
                 ast::Initializer::Expression(expr) => match &expr.node {
@@ -153,25 +152,8 @@ impl Asmgen {
                 ));
             }
         }
-        // explicitly insert a main label
-        for index in func_context.returns.clone() {
-            let block = blocks.get_mut(index).unwrap();
-            for instr in func_context
-                .translate_epilogue(func_context.stack_frame_size as u64)
-                .iter()
-            {
-                block
-                    .instructions
-                    .insert(block.instructions.len() - 1, instr.clone());
-            }
-        }
-        blocks.insert(
-            0,
-            asm::Block::new(
-                Some(asm::Label(name.to_owned())),
-                func_context.translate_prologue(func_context.stack_frame_size as u64),
-            ),
-        );
+        func_context.translate_epilogue(&mut blocks);
+        func_context.translate_prologue(name, &mut blocks);
         Function::new(blocks)
     }
 }
@@ -212,16 +194,6 @@ impl FunctionContext {
             rs1: Register::S0,
             rs2: Register::A0,
             imm: Immediate::Value((offset as i128 * -1) as u64),
-        })
-    }
-
-    #[allow(dead_code)]
-    fn pop_accumulator(&mut self, rd: Register) {
-        self.instrs.push(asm::Instruction::IType {
-            instr: IType::LW,
-            rd,
-            rs1: Register::S0,
-            imm: Immediate::Value(0),
         })
     }
 
@@ -293,39 +265,45 @@ impl FunctionContext {
         }
     }
 
-    #[allow(dead_code)]
-    fn translate_prologue(&mut self, stack_frame_size: u64) -> Vec<asm::Instruction> {
-        vec![
-            asm::Instruction::IType {
-                instr: IType::ADDI,
-                rd: Register::Sp,
-                rs1: Register::Sp,
-                imm: Immediate::Value((stack_frame_size as i128 * -1) as u64),
-            },
-            asm::Instruction::SType {
-                instr: SType::SD,
-                rs1: Register::Sp,
-                rs2: Register::Ra,
-                imm: Immediate::Value(stack_frame_size - 8),
-            },
-            asm::Instruction::SType {
-                instr: SType::SD,
-                rs1: Register::Sp,
-                rs2: Register::S0,
-                imm: Immediate::Value(stack_frame_size - 16),
-            },
-            asm::Instruction::IType {
-                instr: IType::ADDI,
-                rd: Register::S0,
-                rs1: Register::Sp,
-                imm: Immediate::Value(stack_frame_size),
-            },
-        ]
+    fn translate_prologue(&mut self, name: &str, blocks: &mut Vec<asm::Block>) {
+        let stack_frame_size = self.stack_frame_size as u64;
+        blocks.insert(
+            0,
+            asm::Block::new(
+                Some(asm::Label(name.to_owned())),
+                vec![
+                    asm::Instruction::IType {
+                        instr: IType::ADDI,
+                        rd: Register::Sp,
+                        rs1: Register::Sp,
+                        imm: Immediate::Value((stack_frame_size as i128 * -1) as u64),
+                    },
+                    asm::Instruction::SType {
+                        instr: SType::SD,
+                        rs1: Register::Sp,
+                        rs2: Register::Ra,
+                        imm: Immediate::Value(stack_frame_size - 8),
+                    },
+                    asm::Instruction::SType {
+                        instr: SType::SD,
+                        rs1: Register::Sp,
+                        rs2: Register::S0,
+                        imm: Immediate::Value(stack_frame_size - 16),
+                    },
+                    asm::Instruction::IType {
+                        instr: IType::ADDI,
+                        rd: Register::S0,
+                        rs1: Register::Sp,
+                        imm: Immediate::Value(stack_frame_size),
+                    },
+                ],
+            ),
+        );
     }
 
-    #[allow(dead_code)]
-    fn translate_epilogue(&mut self, stack_frame_size: u64) -> Vec<asm::Instruction> {
-        vec![
+    fn translate_epilogue(&mut self, blocks: &mut Vec<asm::Block>) {
+        let stack_frame_size = self.stack_frame_size as u64;
+        let instrs = vec![
             asm::Instruction::IType {
                 instr: IType::LD,
                 rd: Register::S0,
@@ -344,7 +322,15 @@ impl FunctionContext {
                 rs1: Register::Sp,
                 imm: Immediate::Value(stack_frame_size),
             },
-        ]
+        ];
+        for index in &self.returns {
+            for instr in &instrs {
+                let block = blocks.get_mut(*index).unwrap();
+                block
+                    .instructions
+                    .insert(block.instructions.len() - 1, instr.clone());
+            }
+        }
     }
 
     fn translate_operand(&mut self, operand: &Operand) -> Value {
@@ -614,13 +600,10 @@ impl FunctionContext {
                     })),
                     _ => todo!(),
                 }
-                // FIXME: where is the right place to put prologue and epilogue procedure?
                 self.update_stack_frame_size(FunctionContext::align_to(
                     self.stack_offset,
                     FunctionContext::STACK_ALIGNMENT_BYTE,
                 ));
-                // self.translate_prologue(stack_frame_size);
-                // self.translate_epilogue(stack_frame_size);
                 self.add_return(bid);
                 self.push_instr(asm::Instruction::Pseudo(Pseudo::Ret));
             }
