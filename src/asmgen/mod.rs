@@ -475,8 +475,22 @@ impl FunctionContext {
         }
         match op {
             // BinaryOperator::Index => todo!(),
-            // BinaryOperator::Multiply => todo!(),
-            // BinaryOperator::Divide => todo!(),
+            BinaryOperator::Multiply => {
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::mul(dtype.clone()),
+                    rd: Register::A0,
+                    rs1: Register::A0,
+                    rs2: Some(Register::T0),
+                });
+            }
+            BinaryOperator::Divide => {
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::div(lhs.dtype(), lhs.dtype().is_int_signed()),
+                    rd: Register::A0,
+                    rs1: Register::A0,
+                    rs2: Some(Register::T0),
+                });
+            }
             BinaryOperator::Modulo => {
                 self.push_instr(asm::Instruction::RType {
                     instr: RType::rem(lhs.dtype(), lhs.dtype().is_int_signed()),
@@ -516,6 +530,7 @@ impl FunctionContext {
             // BinaryOperator::Greater => todo!(),
             // BinaryOperator::LessOrEqual => todo!(),
             BinaryOperator::GreaterOrEqual => {
+                // a >= b => !(a < b) => (a < b) ^ 1
                 self.push_instr(asm::Instruction::RType {
                     instr: RType::Slt {
                         is_signed: lhs.dtype().is_int_signed(),
@@ -531,7 +546,15 @@ impl FunctionContext {
                     imm: Immediate::Value(1),
                 })
             }
-            // BinaryOperator::Equals => todo!(),
+            BinaryOperator::Equals => {
+                // a == b => (a ^ b) ^ 1
+                self.push_instr(asm::Instruction::IType {
+                    instr: IType::Xori,
+                    rd: Register::A0,
+                    rs1: Register::T0,
+                    imm: Immediate::Value(1),
+                })
+            }
             // BinaryOperator::NotEquals => todo!(),
             // BinaryOperator::BitwiseAnd => todo!(),
             // BinaryOperator::BitwiseXor => todo!(),
