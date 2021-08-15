@@ -331,12 +331,17 @@ pub fn test_asmgen(path: &Path) {
         ::std::process::exit(SKIP_TEST);
     }
     let asm_content = Command::new("cat")
-        .arg(asm_path_str)
+        .arg(asm_path_str.clone())
         .output()
         .expect("asm file");
     assert!(asm_content.status.success());
     println!("asm: \n{}", String::from_utf8_lossy(&asm_content.stdout));
     println!("{}", String::from_utf8_lossy(&asm_content.stderr));
+    Command::new("cp")
+        .arg(asm_path_str)
+        .arg("/home/xilinxing/workspace/c-compiler-rs/test.s")
+        .output()
+        .expect("copy asm file");
 
     // Emulate the executable
     let mut child = Command::new("qemu-riscv64-static")
