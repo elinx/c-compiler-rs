@@ -379,7 +379,7 @@ impl FunctionContext {
         match operand {
             Operand::Constant(constant) => match constant {
                 ir::Constant::Undef { .. } => Value::Constant(0),
-                // ir::Constant::Unit => todo!(),
+                ir::Constant::Unit => Value::Constant(0),
                 ir::Constant::Int { value, .. } => Value::Constant(*value as usize),
                 // ir::Constant::Float { value, width } => todo!(),
                 ir::Constant::GlobalVariable { name, dtype } => {
@@ -749,7 +749,12 @@ impl FunctionContext {
                         rd: Register::A0,
                         rs,
                     })),
-                    _ => todo!(),
+                    Value::Function(symbol) => {
+                        self.push_instr(asm::Instruction::Pseudo::(Pseudo::La {
+                            rd: Register::A0,
+                            symbol,
+                        }));
+                    }
                 }
                 self.update_stack_frame_size(FunctionContext::align_to(
                     self.stack_offset,
@@ -810,9 +815,17 @@ impl FunctionContext {
             Value::Function(offset) => {
                 self.push_instr(asm::Instruction::Pseudo(Pseudo::Call { offset }))
             }
+            Value::Register(rs) => {
+                self.push_instr(asm::Instruction::Pseudo(Pseudo::Jalr { rs }));
+            }
             _ => todo!(),
         }
-        self.push_accumulator(return_type.clone());
+        match return_type {
+            Dtype::Unit { .. } => {}
+            _ => {
+                self.push_accumulator(return_type.clone());
+            }
+        }
     }
 
     fn translate_unary(&mut self, op: &ast::UnaryOperator, operand: &Operand, dtype: &Dtype) {
@@ -842,7 +855,21 @@ impl FunctionContext {
                 Value::Function(_) => todo!(),
             },
             // ast::UnaryOperator::Complement => todo!(),
-            // ast::UnaryOperator::Negate => todo!(),
+            ast::UnaryOperator::Negate => {
+                // !a => a == 0
+                Value::Constant(val) => {
+                    self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                        rd: Register::A0,
+                        imm: (val == 0) as u64,
+                    }));
+                }
+                Value::Register(rs) => {
+                    self.push_instr(asm::Instruction::Pseudo(Pseudo::Seqz {
+                        rd: Register::A0,
+                        rs,
+                    }));
+                }
+            },
             // ast::UnaryOperator::SizeOf => todo!(),
             _ => todo!("unary op: {:?}", op),
         }
