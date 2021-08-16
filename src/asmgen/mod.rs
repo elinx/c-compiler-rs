@@ -750,7 +750,7 @@ impl FunctionContext {
                         rs,
                     })),
                     Value::Function(symbol) => {
-                        self.push_instr(asm::Instruction::Pseudo::(Pseudo::La {
+                        self.push_instr(asm::Instruction::Pseudo(Pseudo::La {
                             rd: Register::A0,
                             symbol,
                         }));
@@ -855,7 +855,7 @@ impl FunctionContext {
                 Value::Function(_) => todo!(),
             },
             // ast::UnaryOperator::Complement => todo!(),
-            ast::UnaryOperator::Negate => {
+            ast::UnaryOperator::Negate => match val {
                 // !a => a == 0
                 Value::Constant(val) => {
                     self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
@@ -869,6 +869,7 @@ impl FunctionContext {
                         rs,
                     }));
                 }
+                _ => todo!(),
             },
             // ast::UnaryOperator::SizeOf => todo!(),
             _ => todo!("unary op: {:?}", op),
