@@ -5,8 +5,8 @@ use std::ops::Deref;
 use std::{mem, vec};
 
 use crate::asm::{
-    self, BType, Function, IType, Immediate, Pseudo, RType, Register, SType, Section, SymbolType,
-    Variable,
+    self, BType, Function, IType, Immediate, Pseudo, RType, Register, RegisterType, SType, Section,
+    SymbolType, Variable,
 };
 use crate::asm::{Directive, SectionType};
 use crate::ir::{self, HasDtype, Named, RegisterId};
@@ -214,7 +214,33 @@ impl FunctionContext {
         self.instrs.insert(index, instr)
     }
 
-    fn push_accumulator(&mut self, dtype: Dtype) {
+    fn alloc_accumulator(&self, dtype: &Dtype) -> Register {
+        match dtype {
+            // Dtype::Unit { is_const } => todo!(),
+            Dtype::Int { .. } | Dtype::Pointer { .. } => Register::arg(RegisterType::Integer, 0),
+            Dtype::Float { .. } => Register::arg(RegisterType::FloatingPoint, 0),
+            // Dtype::Array { inner, size } => todo!(),
+            // Dtype::Struct { name, fields, is_const, size_align_offsets } => todo!(),
+            // Dtype::Function { ret, params } => todo!(),
+            // Dtype::Typedef { name, is_const } => todo!(),
+            _ => todo!(),
+        }
+    }
+
+    fn alloc_tmp(&self, dtype: &Dtype) -> Register {
+        match dtype {
+            // Dtype::Unit { is_const } => todo!(),
+            Dtype::Int { .. } | Dtype::Pointer { .. } => Register::temp(RegisterType::Integer, 0),
+            Dtype::Float { .. } => Register::temp(RegisterType::FloatingPoint, 0),
+            // Dtype::Array { inner, size } => todo!(),
+            // Dtype::Struct { name, fields, is_const, size_align_offsets } => todo!(),
+            // Dtype::Function { ret, params } => todo!(),
+            // Dtype::Typedef { name, is_const } => todo!(),
+            _ => todo!(),
+        }
+    }
+
+    fn push_accumulator(&mut self, dtype: &Dtype) {
         let size = match dtype {
             ir::Dtype::Int { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
             ir::Dtype::Float { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
@@ -226,9 +252,9 @@ impl FunctionContext {
         self.temp_register_offset
             .insert(self.rid.as_ref().unwrap().clone(), offset);
         self.instrs.push(asm::Instruction::SType {
-            instr: SType::store(dtype),
+            instr: SType::store(dtype.clone()),
             rs1: Register::S0,
-            rs2: Register::A0,
+            rs2: self.alloc_accumulator(dtype),
             imm: Immediate::Value((offset as i128 * -1) as u64),
         })
     }
@@ -269,13 +295,15 @@ impl FunctionContext {
         self.max_args_size = max(self.max_args_size, size);
     }
 
-    fn pop_accumulator_at(&mut self, rd: Register, offset: usize, dtype: Dtype) {
+    fn pop_accumulator(&mut self, offset: usize, dtype: &Dtype) -> Register {
+        let rd = self.alloc_tmp(dtype);
         self.instrs.push(asm::Instruction::IType {
-            instr: IType::load(dtype),
+            instr: IType::load(dtype.clone()),
             rd,
             rs1: Register::S0,
             imm: Immediate::Value((offset as i128 * -1) as u64),
-        })
+        });
+        rd
     }
 
     fn stack_offset(&mut self, data_size: usize) -> usize {
@@ -448,13 +476,8 @@ impl FunctionContext {
                             });
                             Value::Register(Register::T0)
                         }
-                        RegisterId::Arg { .. } => {
-                            self.pop_accumulator_at(Register::T0, offset, dtype.clone());
-                            Value::Register(Register::T0)
-                        }
-                        RegisterId::Temp { .. } => {
-                            self.pop_accumulator_at(Register::T0, offset, dtype.clone());
-                            Value::Register(Register::T0)
+                        RegisterId::Arg { .. } | RegisterId::Temp { .. } => {
+                            Value::Register(self.pop_accumulator(offset, dtype))
                         }
                     }
                 } else {
@@ -491,7 +514,7 @@ impl FunctionContext {
             })),
             _ => todo!(),
         }
-        self.push_accumulator(target_type.to_owned());
+        self.push_accumulator(target_type);
     }
 
     fn translate_store(&mut self, ptr: &Operand, value: &Operand) {
@@ -710,7 +733,7 @@ impl FunctionContext {
             // BinaryOperator::AssignBitwiseOr => todo!(),
             _ => todo!("op: {:?}", &op),
         }
-        self.push_accumulator(dtype.to_owned());
+        self.push_accumulator(dtype);
     }
 
     fn translate_block_exit(&mut self, bid: usize, name: &str, exit: &ir::BlockExit) {
@@ -805,7 +828,7 @@ impl FunctionContext {
         for (aid, dtype) in allocations.iter().enumerate() {
             let rid = RegisterId::local(aid);
             self.set_rid(rid);
-            self.push_accumulator(dtype.deref().clone());
+            self.push_accumulator(dtype.deref());
         }
     }
 
@@ -815,14 +838,14 @@ impl FunctionContext {
             Value::Register(rs1) => {
                 self.push_instr(asm::Instruction::IType {
                     instr: IType::load(dtype.to_owned()),
-                    rd: Register::A0,
+                    rd: self.alloc_accumulator(dtype),
                     rs1,
                     imm: Immediate::Value(0),
                 });
             }
             _ => todo!(),
         }
-        self.push_accumulator(dtype.to_owned());
+        self.push_accumulator(dtype);
     }
 
     fn translate_call(&mut self, callee: &Operand, args: &Vec<Operand>, return_type: &Dtype) {
@@ -856,7 +879,7 @@ impl FunctionContext {
         match return_type {
             Dtype::Unit { .. } => {}
             _ => {
-                self.push_accumulator(return_type.clone());
+                self.push_accumulator(return_type);
             }
         }
     }
@@ -907,6 +930,6 @@ impl FunctionContext {
             // ast::UnaryOperator::SizeOf => todo!(),
             _ => todo!("unary op: {:?}", op),
         }
-        self.push_accumulator(dtype.clone());
+        self.push_accumulator(dtype);
     }
 }
