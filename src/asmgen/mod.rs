@@ -12,7 +12,7 @@ use crate::asm::{Directive, SectionType};
 use crate::ir::{self, HasDtype, Named, RegisterId};
 use crate::ir::{Dtype, Operand};
 use crate::Translate;
-use lang_c::ast::{self, BinaryOperator, Float, Integer};
+use lang_c::ast::{self, BinaryOperator, Float, Integer, UnaryOperator};
 
 #[derive(Default)]
 pub struct Asmgen {}
@@ -87,6 +87,40 @@ impl Asmgen {
             Directive::Type(label.to_owned(), SymbolType::Function),
         ]
     }
+
+    fn translate_ast_expr(&self, expr: &ast::Expression) -> f64 {
+        match expr {
+            ast::Expression::Constant(constant) => match &constant.deref().node {
+                ast::Constant::Integer(Integer { number, .. }) => {
+                    number.deref().parse::<i32>().unwrap() as f64
+                }
+                ast::Constant::Float(Float { number, .. }) => {
+                    number.deref().parse::<f64>().unwrap()
+                }
+                ast::Constant::Character(_) => todo!(),
+            },
+            ast::Expression::UnaryOperator(op) => {
+                let operator = &op.deref().node.operator.node;
+                let operand = self.translate_ast_expr(&op.deref().node.operand.node);
+                match operator {
+                    // UnaryOperator::PostIncrement => todo!(),
+                    // UnaryOperator::PostDecrement => todo!(),
+                    // UnaryOperator::PreIncrement => todo!(),
+                    // UnaryOperator::PreDecrement => todo!(),
+                    // UnaryOperator::Address => todo!(),
+                    // UnaryOperator::Indirection => todo!(),
+                    // UnaryOperator::Plus => todo!(),
+                    UnaryOperator::Minus => -1.0 * operand,
+                    // UnaryOperator::Complement => todo!(),
+                    // UnaryOperator::Negate => todo!(),
+                    // UnaryOperator::SizeOf => todo!(),
+                    _ => todo!(),
+                }
+            }
+            _ => todo!(),
+        }
+    }
+
     fn translate_global_variable(
         &self,
         label: &asm::Label,
@@ -95,32 +129,31 @@ impl Asmgen {
     ) -> Variable {
         let val = match initializer {
             Some(initializer) => match initializer {
-                ast::Initializer::Expression(expr) => match &expr.node {
-                    ast::Expression::Constant(constant) => match &constant.deref().node {
-                        ast::Constant::Integer(Integer { number, .. }) => {
-                            number.deref().parse::<i32>().unwrap() as f32
-                        }
-                        ast::Constant::Float(Float { number, .. }) => {
-                            number.deref().parse::<f32>().unwrap()
-                        }
-                        ast::Constant::Character(_) => todo!(),
-                    },
-                    _ => todo!(),
-                },
+                ast::Initializer::Expression(expr) => self.translate_ast_expr(&expr.node),
                 _ => todo!(),
             },
             _ => todo!(),
         };
-        let decl = if let Some(size) = dtype.get_int_width() {
-            match size {
+        let decl = match dtype {
+            // Dtype::Unit { is_const } => todo!(),
+            Dtype::Int { width, .. } => match width {
                 8 => Directive::Byte(val as u8),
                 16 => Directive::Half(val as u16),
                 32 => Directive::Word(val as u32),
                 64 => Directive::Quad(val as u64),
                 _ => panic!("illegal length"),
-            }
-        } else {
-            todo!()
+            },
+            Dtype::Float { width, .. } => match width {
+                32 => Directive::Word((val as f32).to_bits()),
+                64 => Directive::Quad(val.to_bits()),
+                _ => panic!("illegal length"),
+            },
+            // Dtype::Pointer { inner, is_const } => todo!(),
+            // Dtype::Array { inner, size } => todo!(),
+            // Dtype::Struct { name, fields, is_const, size_align_offsets } => todo!(),
+            // Dtype::Function { ret, params } => todo!(),
+            // Dtype::Typedef { name, is_const } => todo!(),
+            _ => todo!(),
         };
         Variable::new(label.to_owned(), vec![decl])
     }
