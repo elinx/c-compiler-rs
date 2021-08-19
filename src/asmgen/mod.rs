@@ -1,6 +1,7 @@
 use core::panic;
 use std::cmp::max;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::ops::Deref;
 use std::{mem, vec};
 
@@ -27,12 +28,12 @@ struct FunctionContext {
     max_args_size: usize,
 }
 
-enum Value {
-    Constant(usize),
-    Register(Register),
-    Function(asm::Label),
-    // RegImm(Register, Immediate),
-}
+// enum Value {
+//     // Constant(usize),
+//     Register(Register),
+//     Function(asm::Label),
+//     // RegImm(Register, Immediate),
+// }
 
 impl Translate<ir::TranslationUnit> for Asmgen {
     type Target = asm::Asm;
@@ -306,6 +307,24 @@ impl FunctionContext {
         rd
     }
 
+    fn move_tmp_to_accumulator(&mut self, dtype: &Dtype) {
+        match dtype {
+            Dtype::Unit { .. } => {}
+            Dtype::Int { .. } | Dtype::Pointer { .. } => {
+                self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
+                    rd: Register::A0,
+                    rs: Register::T0,
+                }))
+            }
+            Dtype::Float { .. } => self.push_instr(asm::Instruction::Pseudo(Pseudo::Fmv {
+                data_size: dtype.clone().try_into().unwrap(),
+                rd: Register::FA0,
+                rs: Register::FT0,
+            })),
+            _ => todo!(),
+        }
+    }
+
     fn stack_offset(&mut self, data_size: usize) -> usize {
         self.stack_offset += data_size;
         self.stack_offset
@@ -436,33 +455,50 @@ impl FunctionContext {
         }
     }
 
-    fn translate_operand(&mut self, operand: &Operand) -> Value {
+    fn translate_operand(&mut self, operand: &Operand) {
         match operand {
             Operand::Constant(constant) => match constant {
-                ir::Constant::Undef { .. } => Value::Constant(0),
-                ir::Constant::Unit => Value::Constant(0),
-                ir::Constant::Int { value, .. } => Value::Constant(*value as usize),
-                // ir::Constant::Float { value, width } => todo!(),
+                ir::Constant::Undef { .. } | ir::Constant::Unit => {}
+                ir::Constant::Int { value, .. } => {
+                    self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                        rd: Register::T0,
+                        imm: *value as u64,
+                    }));
+                }
+                ir::Constant::Float { value, width } => {
+                    self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                        rd: Register::A0,
+                        imm: value.to_bits(),
+                    }));
+                    self.push_instr(asm::Instruction::RType {
+                        instr: RType::fcvt_int_to_float(Dtype::int(*width), operand.dtype()),
+                        rd: Register::FT0,
+                        rs1: Register::A0,
+                        rs2: None,
+                    });
+                }
                 ir::Constant::GlobalVariable { name, dtype } => {
                     match dtype {
                         // Dtype::Unit { is_const } => todo!(),
-                        // Dtype::Int { width, is_signed, is_const } => todo!(),
-                        // Dtype::Float { width, is_const } => todo!(),
-                        // Dtype::Pointer { inner, is_const } => todo!(),
-                        // Dtype::Array { inner, size } => todo!(),
-                        // Dtype::Struct { name, fields, is_const, size_align_offsets } => todo!(),
-                        Dtype::Function { .. } => Value::Function(asm::Label(name.to_owned())),
-                        // Dtype::Typedef { name, is_const } => todo!(),
-                        _ => {
+                        Dtype::Int { .. } | Dtype::Float { .. } => {
                             self.push_instr(asm::Instruction::Pseudo(Pseudo::La {
                                 rd: Register::T0,
                                 symbol: asm::Label(name.to_owned()),
                             }));
-                            Value::Register(Register::T0)
                         }
+                        // Dtype::Pointer { inner, is_const } => todo!(),
+                        // Dtype::Array { inner, size } => todo!(),
+                        // Dtype::Struct { name, fields, is_const, size_align_offsets } => todo!(),
+                        Dtype::Function { .. } => {
+                            self.push_instr(asm::Instruction::Pseudo(Pseudo::La {
+                                rd: Register::T0,
+                                symbol: asm::Label(name.to_owned()),
+                            }))
+                        }
+                        // Dtype::Typedef { name, is_const } => todo!(),
+                        _ => todo!(),
                     }
                 }
-                _ => todo!("constant: {:?}", &constant),
             },
             Operand::Register { rid, dtype } => {
                 if let Some(offset) = self.temp_register_offset.get(rid).cloned() {
@@ -474,10 +510,9 @@ impl FunctionContext {
                                 rs1: Register::S0,
                                 imm: Immediate::Value((offset as i128 * -1) as u64),
                             });
-                            Value::Register(Register::T0)
                         }
                         RegisterId::Arg { .. } | RegisterId::Temp { .. } => {
-                            Value::Register(self.pop_accumulator(offset, dtype))
+                            self.pop_accumulator(offset, dtype);
                         }
                     }
                 } else {
@@ -488,56 +523,75 @@ impl FunctionContext {
     }
 
     fn translate_typecast(&mut self, value: &Operand, target_type: &Dtype) {
-        match self.translate_operand(value) {
-            Value::Constant(val) => {
-                let val = if let Some(size) = target_type.get_int_width() {
-                    match size {
-                        8 => val as i8 as u64,
-                        16 => val as i16 as u64,
-                        32 => val as i32 as u64,
-                        64 => val as i64 as u64,
-                        _ => panic!("illegal length"),
-                    }
-                } else {
-                    panic!("unexpected data")
-                };
-                self.push_instr(asm::Instruction::IType {
-                    instr: IType::ADDI,
+        self.translate_operand(value);
+        match (value.dtype(), target_type) {
+            (Dtype::Int { .. }, Dtype::Int { .. }) => {
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::add(target_type.clone()),
                     rd: Register::A0,
                     rs1: Register::Zero,
-                    imm: Immediate::Value(val),
+                    rs2: Some(Register::T0),
                 });
             }
-            Value::Register(rs) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
-                rd: Register::A0,
-                rs,
-            })),
+            (Dtype::Int { .. }, Dtype::Float { .. }) => {
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::fcvt_int_to_float(value.dtype(), target_type.clone()),
+                    rd: Register::FA0,
+                    rs1: Register::T0,
+                    rs2: None,
+                });
+            }
+            (Dtype::Float { .. }, Dtype::Int { .. }) => {
+                self.push_instr(asm::Instruction::RType {
+                    instr: RType::fcvt_float_to_int(value.dtype(), target_type.clone()),
+                    rd: Register::A0,
+                    rs1: Register::FT0,
+                    rs2: None,
+                });
+            }
+            (
+                Dtype::Float { width, .. },
+                Dtype::Float {
+                    width: target_width,
+                    ..
+                },
+            ) => {
+                if width == *target_width {
+                    self.push_instr(asm::Instruction::Pseudo(Pseudo::Fmv {
+                        data_size: target_type.clone().try_into().unwrap(),
+                        rd: Register::FA0,
+                        rs: Register::FT0,
+                    }));
+                } else {
+                    self.push_instr(asm::Instruction::RType {
+                        instr: RType::FcvtFloatToFloat {
+                            from: value.dtype().try_into().unwrap(),
+                            to: target_type.clone().try_into().unwrap(),
+                        },
+                        rd: Register::FA0,
+                        rs1: Register::FT0,
+                        rs2: None,
+                    })
+                }
+            }
             _ => todo!(),
         }
         self.push_accumulator(target_type);
     }
 
     fn translate_store(&mut self, ptr: &Operand, value: &Operand) {
-        match self.translate_operand(value) {
-            Value::Constant(imm) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
-                rd: Register::A0,
-                imm: imm as u64,
-            })),
-            Value::Register(rs) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
-                rd: Register::A0,
-                rs,
-            })),
-            _ => todo!(),
-        }
-        match self.translate_operand(ptr) {
-            Value::Register(rs1) => self.push_instr(asm::Instruction::SType {
-                instr: SType::store(ptr.dtype().get_pointer_inner().unwrap().clone()),
-                rs1,
-                rs2: Register::A0,
-                imm: Immediate::Value(0),
-            }),
-            _ => panic!("ptr operand of store should not be constant value"),
-        }
+        self.translate_operand(ptr);
+        self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
+            rd: Register::A0,
+            rs: Register::T0,
+        }));
+        self.translate_operand(value);
+        self.push_instr(asm::Instruction::SType {
+            instr: SType::store(ptr.dtype().get_pointer_inner().unwrap().clone()),
+            rs1: Register::A0,
+            rs2: self.alloc_tmp(&ptr.dtype()),
+            imm: Immediate::Value(0),
+        });
     }
 
     fn translate_binop(
@@ -548,29 +602,10 @@ impl FunctionContext {
         dtype: &Dtype,
     ) {
         // value of lhs is in a0
-        match self.translate_operand(lhs) {
-            Value::Constant(imm) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
-                rd: Register::A0,
-                imm: imm as u64,
-            })),
-            Value::Register(rs) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
-                rd: Register::A0,
-                rs,
-            })),
-            _ => todo!(),
-        }
+        self.translate_operand(lhs);
+        self.move_tmp_to_accumulator(&lhs.dtype());
         // value of rhs is in t0
-        match self.translate_operand(rhs) {
-            Value::Constant(imm) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
-                rd: Register::T0,
-                imm: imm as u64,
-            })),
-            Value::Register(rs) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
-                rd: Register::T0,
-                rs,
-            })),
-            _ => todo!(),
-        }
+        self.translate_operand(rhs);
         match op {
             // BinaryOperator::Index => todo!(),
             BinaryOperator::Multiply => {
@@ -748,70 +783,47 @@ impl FunctionContext {
                 arg_then,
                 arg_else,
             } => {
-                // TODO: optimize to merge ConditionJump with previous Compare instruction
-                match self.translate_operand(condition) {
-                    Value::Constant(_) => todo!(),
-                    Value::Register(rs1) => {
-                        let then_label = asm::Label::new(name, arg_then.deref().bid);
-                        let else_label = asm::Label::new(name, arg_else.deref().bid);
-                        self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
-                            rd: Register::A0,
-                            imm: 1,
-                        }));
-                        self.push_instr(asm::Instruction::BType {
-                            instr: BType::Beq,
-                            rs1,
-                            rs2: Register::A0,
-                            imm: then_label,
-                        });
-                        self.push_instr(asm::Instruction::Pseudo(Pseudo::J { offset: else_label }));
-                    }
-                    Value::Function(_) => todo!(),
-                }
+                let then_label = asm::Label::new(name, arg_then.deref().bid);
+                let else_label = asm::Label::new(name, arg_else.deref().bid);
+                self.translate_operand(condition);
+                self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                    rd: Register::A0,
+                    imm: 1,
+                }));
+                self.push_instr(asm::Instruction::BType {
+                    instr: BType::Beq,
+                    rs1: Register::T0, // should not be floating point
+                    rs2: Register::A0,
+                    imm: then_label,
+                });
+                self.push_instr(asm::Instruction::Pseudo(Pseudo::J { offset: else_label }));
             }
             ir::BlockExit::Switch {
                 value,
                 default,
                 cases,
-            } => match self.translate_operand(value) {
-                Value::Constant(_) => todo!(),
-                Value::Register(rs1) => {
-                    cases.iter().for_each(|(constant, jump)| {
-                        let imm = constant.get_int().unwrap().0 as u64;
-                        self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
-                            rd: Register::A0,
-                            imm,
-                        }));
-                        self.push_instr(asm::Instruction::BType {
-                            instr: BType::Beq,
-                            rs1,
-                            rs2: Register::A0,
-                            imm: asm::Label::new(name, jump.deref().bid),
-                        });
-                    });
-                    self.push_instr(asm::Instruction::Pseudo(Pseudo::J {
-                        offset: asm::Label::new(name, default.deref().bid),
+            } => {
+                self.translate_operand(value);
+                cases.iter().for_each(|(constant, jump)| {
+                    let imm = constant.get_int().unwrap().0 as u64;
+                    self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
+                        rd: Register::A0,
+                        imm,
                     }));
-                }
-                Value::Function(_) => todo!(),
-            },
+                    self.push_instr(asm::Instruction::BType {
+                        instr: BType::Beq,
+                        rs1: Register::T0,
+                        rs2: Register::A0,
+                        imm: asm::Label::new(name, jump.deref().bid),
+                    });
+                });
+                self.push_instr(asm::Instruction::Pseudo(Pseudo::J {
+                    offset: asm::Label::new(name, default.deref().bid),
+                }));
+            }
             ir::BlockExit::Return { value } => {
-                match self.translate_operand(value) {
-                    Value::Constant(imm) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
-                        rd: Register::A0,
-                        imm: imm as u64,
-                    })),
-                    Value::Register(rs) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
-                        rd: Register::A0,
-                        rs,
-                    })),
-                    Value::Function(symbol) => {
-                        self.push_instr(asm::Instruction::Pseudo(Pseudo::La {
-                            rd: Register::A0,
-                            symbol,
-                        }));
-                    }
-                }
+                self.translate_operand(value);
+                self.move_tmp_to_accumulator(&value.dtype());
                 self.update_stack_frame_size(FunctionContext::align_to(
                     self.stack_offset,
                     FunctionContext::STACK_ALIGNMENT_BYTE,
@@ -833,18 +845,13 @@ impl FunctionContext {
     }
 
     fn translate_load(&mut self, ptr: &Operand, dtype: &Dtype) {
-        match self.translate_operand(ptr) {
-            Value::Constant(_) => panic!("can't load value from constant"),
-            Value::Register(rs1) => {
-                self.push_instr(asm::Instruction::IType {
-                    instr: IType::load(dtype.to_owned()),
-                    rd: self.alloc_accumulator(dtype),
-                    rs1,
-                    imm: Immediate::Value(0),
-                });
-            }
-            _ => todo!(),
-        }
+        self.translate_operand(ptr);
+        self.push_instr(asm::Instruction::IType {
+            instr: IType::load(dtype.to_owned()),
+            rd: self.alloc_accumulator(dtype),
+            rs1: Register::T0,
+            imm: Immediate::Value(0),
+        });
         self.push_accumulator(dtype);
     }
 
@@ -852,30 +859,13 @@ impl FunctionContext {
         // push args in reverse order, eg arg1, arg0... based on Sp
         let mut offset = 0;
         args.iter().for_each(|arg| {
-            let val = self.translate_operand(arg);
-            match val {
-                Value::Constant(imm) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
-                    rd: Register::A0,
-                    imm: imm as u64,
-                })),
-                Value::Register(rs) => self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
-                    rd: Register::A0,
-                    rs,
-                })),
-                Value::Function(_) => todo!(),
-            }
+            self.translate_operand(arg);
+            self.move_tmp_to_accumulator(&arg.dtype());
             offset = self.push_arg(arg.dtype(), offset);
         });
         self.update_max_args_size(offset);
-        match self.translate_operand(callee) {
-            Value::Function(offset) => {
-                self.push_instr(asm::Instruction::Pseudo(Pseudo::Call { offset }))
-            }
-            Value::Register(rs) => {
-                self.push_instr(asm::Instruction::Pseudo(Pseudo::Jalr { rs }));
-            }
-            _ => todo!(),
-        }
+        self.translate_operand(callee);
+        self.push_instr(asm::Instruction::Pseudo(Pseudo::Jalr { rs: Register::T0 }));
         match return_type {
             Dtype::Unit { .. } => {}
             _ => {
@@ -885,7 +875,7 @@ impl FunctionContext {
     }
 
     fn translate_unary(&mut self, op: &ast::UnaryOperator, operand: &Operand, dtype: &Dtype) {
-        let val = self.translate_operand(operand);
+        self.translate_operand(operand);
         match op {
             // ast::UnaryOperator::PostIncrement => todo!(),
             // ast::UnaryOperator::PostDecrement => todo!(),
@@ -894,37 +884,26 @@ impl FunctionContext {
             // ast::UnaryOperator::Address => todo!(),
             // ast::UnaryOperator::Indirection => todo!(),
             // ast::UnaryOperator::Plus => todo!(),
-            ast::UnaryOperator::Minus => match val {
-                Value::Constant(val) => {
-                    self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
-                        rd: Register::A0,
-                        imm: ((val as i128) * -1) as u64,
-                    }));
-                }
-                Value::Register(rs) => {
-                    self.push_instr(asm::Instruction::Pseudo(Pseudo::neg(
-                        dtype.clone(),
-                        Register::A0,
-                        rs,
-                    )));
-                }
-                Value::Function(_) => todo!(),
+            ast::UnaryOperator::Minus => match dtype {
+                Dtype::Int { .. } => self.push_instr(asm::Instruction::Pseudo(Pseudo::neg(
+                    dtype.clone(),
+                    Register::A0,
+                    Register::T0,
+                ))),
+                Dtype::Float { .. } => self.push_instr(asm::Instruction::Pseudo(Pseudo::fneg(
+                    dtype.clone(),
+                    Register::FA0,
+                    Register::FT0,
+                ))),
+                _ => todo!(),
             },
             // ast::UnaryOperator::Complement => todo!(),
-            ast::UnaryOperator::Negate => match val {
+            ast::UnaryOperator::Negate => match dtype {
                 // !a => a == 0
-                Value::Constant(val) => {
-                    self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
-                        rd: Register::A0,
-                        imm: (val == 0) as u64,
-                    }));
-                }
-                Value::Register(rs) => {
-                    self.push_instr(asm::Instruction::Pseudo(Pseudo::Seqz {
-                        rd: Register::A0,
-                        rs,
-                    }));
-                }
+                Dtype::Int { .. } => self.push_instr(asm::Instruction::Pseudo(Pseudo::Seqz {
+                    rd: Register::A0,
+                    rs: Register::T0,
+                })),
                 _ => todo!(),
             },
             // ast::UnaryOperator::SizeOf => todo!(),
