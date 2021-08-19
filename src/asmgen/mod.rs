@@ -284,9 +284,9 @@ impl FunctionContext {
         };
         let size = FunctionContext::align_to(size, 4); // align to word boundary
         self.instrs.push(asm::Instruction::SType {
-            instr: SType::store(dtype),
+            instr: SType::store(dtype.clone()),
             rs1: Register::Sp,
-            rs2: Register::A0,
+            rs2: self.alloc_accumulator(&dtype),
             imm: Immediate::Value(offset as u64),
         });
         offset + size
@@ -589,7 +589,7 @@ impl FunctionContext {
         self.push_instr(asm::Instruction::SType {
             instr: SType::store(ptr.dtype().get_pointer_inner().unwrap().clone()),
             rs1: Register::A0,
-            rs2: self.alloc_tmp(&ptr.dtype()),
+            rs2: self.alloc_tmp(&value.dtype()),
             imm: Immediate::Value(0),
         });
     }
@@ -604,64 +604,83 @@ impl FunctionContext {
         // value of lhs is in a0
         self.translate_operand(lhs);
         self.move_tmp_to_accumulator(&lhs.dtype());
+        let rs1 = self.alloc_accumulator(dtype);
         // value of rhs is in t0
         self.translate_operand(rhs);
+        let rs2 = Some(self.alloc_tmp(dtype));
+        let rd = self.alloc_accumulator(dtype);
         match op {
             // BinaryOperator::Index => todo!(),
             BinaryOperator::Multiply => {
                 self.push_instr(asm::Instruction::RType {
-                    instr: RType::mul(dtype.clone()),
-                    rd: Register::A0,
-                    rs1: Register::A0,
-                    rs2: Some(Register::T0),
+                    instr: if matches!(dtype, Dtype::Int{..}) {
+                        RType::mul(lhs.dtype())
+                    } else {
+                        RType::fmul(lhs.dtype())
+                    },
+                    rd,
+                    rs1,
+                    rs2,
                 });
             }
             BinaryOperator::Divide => {
                 self.push_instr(asm::Instruction::RType {
-                    instr: RType::div(lhs.dtype(), lhs.dtype().is_int_signed()),
-                    rd: Register::A0,
-                    rs1: Register::A0,
-                    rs2: Some(Register::T0),
+                    instr: if matches!(dtype, Dtype::Int{..}) {
+                        RType::div(lhs.dtype(), lhs.dtype().is_int_signed())
+                    } else {
+                        RType::fdiv(lhs.dtype())
+                    },
+                    rd,
+                    rs1,
+                    rs2,
                 });
             }
             BinaryOperator::Modulo => {
                 self.push_instr(asm::Instruction::RType {
                     instr: RType::rem(lhs.dtype(), lhs.dtype().is_int_signed()),
-                    rd: Register::A0,
-                    rs1: Register::A0,
-                    rs2: Some(Register::T0),
+                    rd,
+                    rs1,
+                    rs2,
                 });
             }
             BinaryOperator::Plus => {
                 self.push_instr(asm::Instruction::RType {
-                    instr: RType::add(lhs.dtype()),
-                    rd: Register::A0,
-                    rs1: Register::A0,
-                    rs2: Some(Register::T0),
+                    instr: if matches!(dtype, Dtype::Int{..}) {
+                        RType::add(lhs.dtype())
+                    } else {
+                        RType::fadd(lhs.dtype())
+                    },
+                    rd,
+                    rs1,
+                    rs2,
                 });
             }
             BinaryOperator::Minus => {
                 self.push_instr(asm::Instruction::RType {
-                    instr: RType::sub(lhs.dtype()),
-                    rd: Register::A0,
-                    rs1: Register::A0,
-                    rs2: Some(Register::T0),
+                    instr: if matches!(dtype, Dtype::Int{..}) {
+                        RType::sub(lhs.dtype())
+                    } else {
+                        RType::fsub(lhs.dtype())
+                    },
+                    rd,
+                    rs1,
+                    rs2,
                 });
             }
             BinaryOperator::ShiftLeft => {
                 self.push_instr(asm::Instruction::RType {
                     instr: RType::sll(lhs.dtype()),
-                    rd: Register::A0,
-                    rs1: Register::A0,
-                    rs2: Some(Register::T0),
+                    rd,
+                    rs1,
+                    rs2,
                 });
             }
             BinaryOperator::ShiftRight => {
                 self.push_instr(asm::Instruction::RType {
                     instr: RType::srl(lhs.dtype()),
-                    rd: Register::A0,
-                    rs1: Register::A0,
-                    rs2: Some(Register::T0),
+                    rd,
+                    rs1,
+                    rs2,
                 });
             }
             BinaryOperator::Less => {
@@ -669,9 +688,9 @@ impl FunctionContext {
                     instr: RType::Slt {
                         is_signed: lhs.dtype().is_int_signed(),
                     },
-                    rd: Register::A0,
-                    rs1: Register::A0,
-                    rs2: Some(Register::T0),
+                    rd,
+                    rs1,
+                    rs2,
                 });
             }
             BinaryOperator::Greater => {
@@ -680,7 +699,7 @@ impl FunctionContext {
                     instr: RType::Slt {
                         is_signed: lhs.dtype().is_int_signed(),
                     },
-                    rd: Register::A0,
+                    rd,
                     rs1: Register::T0,
                     rs2: Some(Register::A0),
                 });
@@ -692,13 +711,13 @@ impl FunctionContext {
                     instr: RType::Slt {
                         is_signed: lhs.dtype().is_int_signed(),
                     },
-                    rd: Register::A0,
+                    rd,
                     rs1: Register::A0,
                     rs2: Some(Register::T0),
                 });
                 self.push_instr(asm::Instruction::IType {
                     instr: IType::Xori,
-                    rd: Register::A0,
+                    rd,
                     rs1: Register::A0,
                     imm: Immediate::Value(1),
                 })
@@ -707,12 +726,12 @@ impl FunctionContext {
                 // a == b => (a ^ b) == 0
                 self.push_instr(asm::Instruction::RType {
                     instr: RType::Xor,
-                    rd: Register::A0,
+                    rd,
                     rs1: Register::A0,
                     rs2: Some(Register::T0),
                 });
                 self.push_instr(asm::Instruction::Pseudo(Pseudo::Seqz {
-                    rd: Register::A0,
+                    rd,
                     rs: Register::A0,
                 }));
             }
@@ -720,19 +739,19 @@ impl FunctionContext {
                 // a != b => (a ^ b) != 0
                 self.push_instr(asm::Instruction::RType {
                     instr: RType::Xor,
-                    rd: Register::A0,
+                    rd,
                     rs1: Register::A0,
                     rs2: Some(Register::T0),
                 });
                 self.push_instr(asm::Instruction::Pseudo(Pseudo::Snez {
-                    rd: Register::A0,
+                    rd,
                     rs: Register::A0,
                 }));
             }
             BinaryOperator::BitwiseAnd => {
                 self.push_instr(asm::Instruction::RType {
                     instr: RType::And,
-                    rd: Register::A0,
+                    rd,
                     rs1: Register::A0,
                     rs2: Some(Register::T0),
                 });
@@ -740,7 +759,7 @@ impl FunctionContext {
             BinaryOperator::BitwiseXor => {
                 self.push_instr(asm::Instruction::RType {
                     instr: RType::Xor,
-                    rd: Register::A0,
+                    rd,
                     rs1: Register::A0,
                     rs2: Some(Register::T0),
                 });
@@ -748,7 +767,7 @@ impl FunctionContext {
             BinaryOperator::BitwiseOr => {
                 self.push_instr(asm::Instruction::RType {
                     instr: RType::Or,
-                    rd: Register::A0,
+                    rd,
                     rs1: Register::A0,
                     rs2: Some(Register::T0),
                 });
