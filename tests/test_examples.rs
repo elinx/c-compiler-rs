@@ -67,13 +67,13 @@ const ASMGEN_TEST_DIR_LIST: [&str; 5] = [
     "examples/ir4",
 ];
 
-const ASMGEN_SMALL_TEST_IGNORE_LIST: [&str; 10] = [
+const ASMGEN_SMALL_TEST_IGNORE_LIST: [&str; 9] = [
     "array.ir",
     "array2.ir",
     "array3.ir",
     "array4.ir",
     "array5.ir",
-    "float.ir",
+    // "float.ir",
     "struct.ir",
     "struct2.ir",
     "struct3.ir",

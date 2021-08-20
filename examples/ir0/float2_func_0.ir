@@ -1,0 +1,163 @@
+fun f64 @main () {
+init:
+  bid: b0
+  allocations:
+    %l0:f32:a
+    %l1:f64:b
+    %l2:f64:c
+    %l3:f32:d
+    %l4:f32:e
+    %l5:f64:f
+    %l6:f64:g
+    %l7:f32:h
+    %l8:f32:i
+    %l9:f64:j
+    %l10:f32:k
+    %l11:f64:l
+    %l12:f32:m
+    %l13:f64:n
+    %l14:f32:o
+    %l15:f64:p
+    %l16:f32:q
+    %l17:f64:r
+    %l18:f32:s
+    %l19:f64:t
+    %l20:f32:u
+    %l21:f64:v
+    %l22:f32:w
+    %l23:f64:x
+    %l24:f64:y
+    %l25:f32:z
+    %l26:f32:A
+
+block b0:
+  %b0:i0:f64 = minus 0.05068116821797983:f64
+  %b0:i1:f32 = typecast %b0:i0:f64 to f32
+  %b0:i2:unit = store %b0:i1:f32 %l0:f32*
+  %b0:i3:f64 = typecast 0.1300852745771408:f32 to f64
+  %b0:i4:unit = store %b0:i3:f64 %l1:f64*
+  %b0:i5:f64 = minus 0.2358076240617986:f64
+  %b0:i6:unit = store %b0:i5:f64 %l2:f64*
+  %b0:i7:f32 = typecast 0.6641848290176688:f64 to f32
+  %b0:i8:unit = store %b0:i7:f32 %l3:f32*
+  %b0:i9:f64 = minus 1.1549382423569812:f64
+  %b0:i10:f32 = typecast %b0:i9:f64 to f32
+  %b0:i11:unit = store %b0:i10:f32 %l4:f32*
+  %b0:i12:f64 = minus 0.09326438429669882:f64
+  %b0:i13:unit = store %b0:i12:f64 %l5:f64*
+  %b0:i14:f64 = typecast 2.2158002853393555:f32 to f64
+  %b0:i15:unit = store %b0:i14:f64 %l6:f64*
+  %b0:i16:unit = store 0.901569128036499:f32 %l7:f32*
+  %b0:i17:unit = store 1.0305930376052856:f32 %l8:f32*
+  %b0:i18:f64 = typecast 1.6341218948364258:f32 to f64
+  %b0:i19:unit = store %b0:i18:f64 %l9:f64*
+  %b0:i20:f64 = minus 0.8982077157835295:f64
+  %b0:i21:f32 = typecast %b0:i20:f64 to f32
+  %b0:i22:unit = store %b0:i21:f32 %l10:f32*
+  %b0:i23:f64 = minus 0.6727253779879557:f64
+  %b0:i24:unit = store %b0:i23:f64 %l11:f64*
+  %b0:i25:f32 = minus 0.23291367292404175:f32
+  %b0:i26:unit = store %b0:i25:f32 %l12:f32*
+  %b0:i27:f64 = minus 0.463904118983923:f64
+  %b0:i28:unit = store %b0:i27:f64 %l13:f64*
+  %b0:i29:f32 = minus 0.9632771015167236:f32
+  %b0:i30:unit = store %b0:i29:f32 %l14:f32*
+  %b0:i31:f64 = typecast 0.5643752813339233:f32 to f64
+  %b0:i32:unit = store %b0:i31:f64 %l15:f64*
+  %b0:i33:f32 = typecast 0.3432406982203581:f64 to f32
+  %b0:i34:unit = store %b0:i33:f32 %l16:f32*
+  %b0:i35:f32 = minus 0.3480624854564667:f32
+  %b0:i36:f64 = typecast %b0:i35:f32 to f64
+  %b0:i37:unit = store %b0:i36:f64 %l17:f64*
+  %b0:i38:f32 = minus 0.9020879864692688:f32
+  %b0:i39:unit = store %b0:i38:f32 %l18:f32*
+  %b0:i40:f64 = minus 1.4495712702485886:f64
+  %b0:i41:unit = store %b0:i40:f64 %l19:f64*
+  %b0:i42:f64 = minus 1.9463635009455609:f64
+  %b0:i43:f32 = typecast %b0:i42:f64 to f32
+  %b0:i44:unit = store %b0:i43:f32 %l20:f32*
+  %b0:i45:unit = store 1.5564327401737514:f64 %l21:f64*
+  %b0:i46:f32 = typecast 1.306527483443752:f64 to f32
+  %b0:i47:unit = store %b0:i46:f32 %l22:f32*
+  %b0:i48:f32 = minus 0.9012829065322876:f32
+  %b0:i49:f64 = typecast %b0:i48:f32 to f64
+  %b0:i50:unit = store %b0:i49:f64 %l23:f64*
+  %b0:i51:f32 = minus 1.4481353759765625:f32
+  %b0:i52:f64 = typecast %b0:i51:f32 to f64
+  %b0:i53:unit = store %b0:i52:f64 %l24:f64*
+  %b0:i54:f32 = minus 0.3943416476249695:f32
+  %b0:i55:unit = store %b0:i54:f32 %l25:f32*
+  %b0:i56:unit = store 1.6275622844696045:f32 %l26:f32*
+  %b0:i57:f32 = load %l26:f32*
+  %b0:i58:f32 = load %l25:f32*
+  %b0:i59:f64 = load %l24:f64*
+  %b0:i60:f64 = load %l23:f64*
+  %b0:i61:f32 = load %l22:f32*
+  %b0:i62:f64 = load %l21:f64*
+  %b0:i63:f32 = load %l20:f32*
+  %b0:i64:f64 = load %l19:f64*
+  %b0:i65:f32 = load %l18:f32*
+  %b0:i66:f64 = load %l17:f64*
+  %b0:i67:f32 = load %l16:f32*
+  %b0:i68:f64 = load %l15:f64*
+  %b0:i69:f32 = load %l14:f32*
+  %b0:i70:f64 = load %l13:f64*
+  %b0:i71:f32 = load %l12:f32*
+  %b0:i72:f64 = load %l11:f64*
+  %b0:i73:f32 = load %l10:f32*
+  %b0:i74:f64 = load %l9:f64*
+  %b0:i75:f32 = load %l8:f32*
+  %b0:i76:f32 = load %l7:f32*
+  %b0:i77:f64 = load %l6:f64*
+  %b0:i78:f64 = load %l5:f64*
+  %b0:i79:f32 = load %l4:f32*
+  %b0:i80:f32 = load %l3:f32*
+  %b0:i81:f64 = load %l2:f64*
+  %b0:i82:f64 = load %l1:f64*
+  %b0:i83:f32 = load %l0:f32*
+  %b0:i84:f64 = typecast %b0:i83:f32 to f64
+  %b0:i85:f64 = sub %b0:i82:f64 %b0:i84:f64
+  %b0:i86:f64 = sub %b0:i81:f64 %b0:i85:f64
+  %b0:i87:f64 = typecast %b0:i80:f32 to f64
+  %b0:i88:f64 = mul %b0:i87:f64 %b0:i86:f64
+  %b0:i89:f64 = typecast %b0:i79:f32 to f64
+  %b0:i90:f64 = div %b0:i89:f64 %b0:i88:f64
+  %b0:i91:f64 = add %b0:i78:f64 %b0:i90:f64
+  %b0:i92:f64 = div %b0:i77:f64 %b0:i91:f64
+  %b0:i93:f64 = typecast %b0:i76:f32 to f64
+  %b0:i94:f64 = sub %b0:i93:f64 %b0:i92:f64
+  %b0:i95:f64 = typecast %b0:i75:f32 to f64
+  %b0:i96:f64 = add %b0:i95:f64 %b0:i94:f64
+  %b0:i97:f64 = mul %b0:i74:f64 %b0:i96:f64
+  %b0:i98:f64 = typecast %b0:i73:f32 to f64
+  %b0:i99:f64 = div %b0:i98:f64 %b0:i97:f64
+  %b0:i100:f64 = add %b0:i72:f64 %b0:i99:f64
+  %b0:i101:f64 = typecast %b0:i71:f32 to f64
+  %b0:i102:f64 = div %b0:i101:f64 %b0:i100:f64
+  %b0:i103:f64 = sub %b0:i70:f64 %b0:i102:f64
+  %b0:i104:f64 = typecast %b0:i69:f32 to f64
+  %b0:i105:f64 = add %b0:i104:f64 %b0:i103:f64
+  %b0:i106:f64 = mul %b0:i68:f64 %b0:i105:f64
+  %b0:i107:f64 = typecast %b0:i67:f32 to f64
+  %b0:i108:f64 = mul %b0:i107:f64 %b0:i106:f64
+  %b0:i109:f64 = add %b0:i66:f64 %b0:i108:f64
+  %b0:i110:f64 = typecast %b0:i65:f32 to f64
+  %b0:i111:f64 = div %b0:i110:f64 %b0:i109:f64
+  %b0:i112:f64 = div %b0:i64:f64 %b0:i111:f64
+  %b0:i113:f64 = typecast %b0:i63:f32 to f64
+  %b0:i114:f64 = mul %b0:i113:f64 %b0:i112:f64
+  %b0:i115:f64 = div %b0:i62:f64 %b0:i114:f64
+  %b0:i116:f64 = typecast %b0:i61:f32 to f64
+  %b0:i117:f64 = div %b0:i116:f64 %b0:i115:f64
+  %b0:i118:f64 = sub %b0:i60:f64 %b0:i117:f64
+  %b0:i119:f64 = div %b0:i59:f64 %b0:i118:f64
+  %b0:i120:f64 = typecast %b0:i58:f32 to f64
+  %b0:i121:f64 = add %b0:i120:f64 %b0:i119:f64
+  %b0:i122:f64 = typecast %b0:i57:f32 to f64
+  %b0:i123:f64 = div %b0:i122:f64 %b0:i121:f64
+  %b0:i124:i32 = typecast %b0:i123:f64 to i32
+  ret %b0:i124:i32
+
+block b1:
+  ret undef:i32
+}

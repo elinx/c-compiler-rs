@@ -166,3 +166,14 @@ make run
             > layout regs
             > layout asm
     ```
+- double to hex
+
+```python
+import binascii
+import struct
+struct.unpack('d', binascii.unhexlify("3cfd4f970e804f1"))
+
+def double_to_hex(f):
+    return hex(struct.unpack('<Q', struct.pack('<d', f))[0])
+
+```

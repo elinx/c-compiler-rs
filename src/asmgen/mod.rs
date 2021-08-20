@@ -462,10 +462,16 @@ impl FunctionContext {
                 ir::Constant::Float { value, width } => {
                     self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
                         rd: Register::T0,
-                        imm: value.to_bits(),
+                        imm: {
+                            if *width == 64 {
+                                value.to_bits()
+                            } else {
+                                (value.into_inner() as f32).to_bits() as u64
+                            }
+                        },
                     }));
                     self.push_instr(asm::Instruction::RType {
-                        instr: RType::fcvt_int_to_float(Dtype::int(*width), operand.dtype()),
+                        instr: RType::fmv_int_to_float(operand.dtype()),
                         rd: Register::FT0,
                         rs1: Register::T0,
                         rs2: None,
