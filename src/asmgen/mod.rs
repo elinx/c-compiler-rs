@@ -241,14 +241,19 @@ impl FunctionContext {
         }
     }
 
-    fn push_accumulator(&mut self, dtype: &Dtype) {
+    fn aligned_dtype_size(&mut self, dtype: &Dtype) -> usize {
         let size = match dtype {
             ir::Dtype::Int { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
             ir::Dtype::Float { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
             ir::Dtype::Pointer { .. } => ir::Dtype::SIZE_OF_POINTER,
+            Dtype::Array { inner, size, .. } => *size * self.aligned_dtype_size(inner.deref()),
             _ => todo!("data size failed: {:?}", dtype),
         };
-        let size = FunctionContext::align_to(size, 4); // align to word boundary
+        FunctionContext::align_to(size, 4) // align to word boundary
+    }
+
+    fn push_accumulator(&mut self, dtype: &Dtype) {
+        let size = self.aligned_dtype_size(dtype);
         let offset = self.stack_offset(size);
         self.temp_register_offset
             .insert(self.rid.as_ref().unwrap().clone(), offset);
@@ -265,24 +270,12 @@ impl FunctionContext {
             self.rid.as_ref().unwrap().clone(),
             (offset as i128 * -1) as usize,
         );
-        let size = match dtype {
-            ir::Dtype::Int { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
-            ir::Dtype::Float { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
-            ir::Dtype::Pointer { .. } => ir::Dtype::SIZE_OF_POINTER,
-            _ => todo!("data size failed: {:?}", dtype),
-        };
-        let size = FunctionContext::align_to(size, 4); // align to word boundary
+        let size = self.aligned_dtype_size(&dtype);
         offset + size
     }
 
     fn push_arg(&mut self, dtype: Dtype, offset: usize) -> usize {
-        let size = match dtype {
-            ir::Dtype::Int { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
-            ir::Dtype::Float { width, .. } => (width - 1) / ir::Dtype::BITS_OF_BYTE + 1,
-            ir::Dtype::Pointer { .. } => ir::Dtype::SIZE_OF_POINTER,
-            _ => todo!("data size failed: {:?}", dtype),
-        };
-        let size = FunctionContext::align_to(size, 4); // align to word boundary
+        let size = self.aligned_dtype_size(&dtype);
         self.instrs.push(asm::Instruction::SType {
             instr: SType::store(dtype.clone()),
             rs1: Register::Sp,
@@ -361,7 +354,7 @@ impl FunctionContext {
 
     fn translate_instruction(&mut self, instr: &ir::Instruction) {
         match instr {
-            // ir::Instruction::Nop => todo!(),
+            ir::Instruction::Nop => {}
             ir::Instruction::BinOp {
                 op,
                 lhs,
@@ -382,8 +375,9 @@ impl FunctionContext {
                 value,
                 target_dtype,
             } => self.translate_typecast(value, target_dtype),
-            // ir::Instruction::GetElementPtr { ptr, offset, dtype } => todo!(),
-            _ => todo!("instr: {:?}", &instr),
+            ir::Instruction::GetElementPtr { ptr, offset, dtype } => {
+                self.translate_gep(ptr, offset, dtype)
+            }
         }
     }
 
@@ -467,13 +461,13 @@ impl FunctionContext {
                 }
                 ir::Constant::Float { value, width } => {
                     self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
-                        rd: Register::A0,
+                        rd: Register::T0,
                         imm: value.to_bits(),
                     }));
                     self.push_instr(asm::Instruction::RType {
                         instr: RType::fcvt_int_to_float(Dtype::int(*width), operand.dtype()),
                         rd: Register::FT0,
-                        rs1: Register::A0,
+                        rs1: Register::T0,
                         rs2: None,
                     });
                 }
@@ -601,13 +595,13 @@ impl FunctionContext {
         rhs: &Operand,
         dtype: &Dtype,
     ) {
-        // value of lhs is in a0
+        // value of lhs is in a0/fa0
         self.translate_operand(lhs);
         self.move_tmp_to_accumulator(&lhs.dtype());
-        let rs1 = self.alloc_accumulator(dtype);
-        // value of rhs is in t0
+        let rs1 = self.alloc_accumulator(&lhs.dtype());
+        // value of rhs is in t0/ft0
         self.translate_operand(rhs);
-        let rs2 = Some(self.alloc_tmp(dtype));
+        let rs2 = Some(self.alloc_tmp(&rhs.dtype()));
         let rd = self.alloc_accumulator(dtype);
         match op {
             // BinaryOperator::Index => todo!(),
@@ -685,8 +679,12 @@ impl FunctionContext {
             }
             BinaryOperator::Less => {
                 self.push_instr(asm::Instruction::RType {
-                    instr: RType::Slt {
-                        is_signed: lhs.dtype().is_int_signed(),
+                    instr: if matches!(lhs.dtype(), Dtype::Int{..}) {
+                        RType::Slt {
+                            is_signed: lhs.dtype().is_int_signed(),
+                        }
+                    } else {
+                        RType::Flt(lhs.dtype().try_into().unwrap())
                     },
                     rd,
                     rs1,
@@ -696,15 +694,39 @@ impl FunctionContext {
             BinaryOperator::Greater => {
                 // a > b => b < a
                 self.push_instr(asm::Instruction::RType {
-                    instr: RType::Slt {
-                        is_signed: lhs.dtype().is_int_signed(),
+                    instr: if matches!(lhs.dtype(), Dtype::Int{..}) {
+                        RType::Slt {
+                            is_signed: lhs.dtype().is_int_signed(),
+                        }
+                    } else {
+                        RType::Flt(lhs.dtype().try_into().unwrap())
                     },
                     rd,
-                    rs1: Register::T0,
-                    rs2: Some(Register::A0),
+                    rs1: rs2.unwrap(),
+                    rs2: Some(rs1),
                 });
             }
-            // BinaryOperator::LessOrEqual => todo!(),
+            BinaryOperator::LessOrEqual => {
+                // a <= b => !(a > b) => !(b < a) => (b > a) ^ 1
+                self.push_instr(asm::Instruction::RType {
+                    instr: if matches!(lhs.dtype(), Dtype::Int{..}) {
+                        RType::Slt {
+                            is_signed: lhs.dtype().is_int_signed(),
+                        }
+                    } else {
+                        RType::Flt(lhs.dtype().try_into().unwrap())
+                    },
+                    rd,
+                    rs1: rs2.unwrap(),
+                    rs2: Some(rs1),
+                });
+                self.push_instr(asm::Instruction::IType {
+                    instr: IType::Xori,
+                    rd,
+                    rs1: Register::A0,
+                    imm: Immediate::Value(1),
+                });
+            }
             BinaryOperator::GreaterOrEqual => {
                 // a >= b => !(a < b) => (a < b) ^ 1
                 self.push_instr(asm::Instruction::RType {
@@ -720,20 +742,29 @@ impl FunctionContext {
                     rd,
                     rs1: Register::A0,
                     imm: Immediate::Value(1),
-                })
+                });
             }
             BinaryOperator::Equals => {
-                // a == b => (a ^ b) == 0
-                self.push_instr(asm::Instruction::RType {
-                    instr: RType::Xor,
-                    rd,
-                    rs1: Register::A0,
-                    rs2: Some(Register::T0),
-                });
-                self.push_instr(asm::Instruction::Pseudo(Pseudo::Seqz {
-                    rd,
-                    rs: Register::A0,
-                }));
+                if matches!(lhs.dtype(), Dtype::Int{..}) {
+                    // a == b => (a ^ b) == 0
+                    self.push_instr(asm::Instruction::RType {
+                        instr: RType::Xor,
+                        rd,
+                        rs1: Register::A0,
+                        rs2: Some(Register::T0),
+                    });
+                    self.push_instr(asm::Instruction::Pseudo(Pseudo::Seqz {
+                        rd,
+                        rs: Register::A0,
+                    }));
+                } else {
+                    self.push_instr(asm::Instruction::RType {
+                        instr: RType::feq(lhs.dtype()),
+                        rd,
+                        rs1,
+                        rs2,
+                    });
+                }
             }
             BinaryOperator::NotEquals => {
                 // a != b => (a ^ b) != 0
@@ -859,7 +890,10 @@ impl FunctionContext {
         for (aid, dtype) in allocations.iter().enumerate() {
             let rid = RegisterId::local(aid);
             self.set_rid(rid);
-            self.push_accumulator(dtype.deref());
+            let size = self.aligned_dtype_size(dtype.deref());
+            let offset = self.stack_offset(size);
+            self.temp_register_offset
+                .insert(self.rid.as_ref().unwrap().clone(), offset);
         }
     }
 
@@ -928,6 +962,22 @@ impl FunctionContext {
             // ast::UnaryOperator::SizeOf => todo!(),
             _ => todo!("unary op: {:?}", op),
         }
+        self.push_accumulator(dtype);
+    }
+
+    fn translate_gep(&mut self, ptr: &Operand, offset: &Operand, dtype: &Dtype) {
+        self.translate_operand(ptr);
+        self.push_instr(asm::Instruction::Pseudo(Pseudo::Mv {
+            rd: Register::A0,
+            rs: Register::T0,
+        }));
+        self.translate_operand(offset);
+        self.push_instr(asm::Instruction::RType {
+            instr: RType::add(dtype.clone()),
+            rd: Register::A0,
+            rs1: Register::T0,
+            rs2: Some(Register::A0),
+        });
         self.push_accumulator(dtype);
     }
 }
