@@ -257,10 +257,16 @@ impl FunctionContext {
     }
 
     fn push_accumulator(&mut self, dtype: &Dtype) {
-        let size = self.aligned_dtype_size(dtype);
-        let offset = self.stack_offset(size);
-        self.temp_register_offset
-            .insert(self.rid.as_ref().unwrap().clone(), offset);
+        let offset =
+            if let Some(offset) = self.temp_register_offset.get(&self.rid.as_ref().unwrap()) {
+                *offset
+            } else {
+                let size = self.aligned_dtype_size(dtype);
+                let offset = self.stack_offset(size);
+                self.temp_register_offset
+                    .insert(self.rid.as_ref().unwrap().clone(), offset);
+                offset
+            };
         self.instrs.push(asm::Instruction::SType {
             instr: SType::store(dtype.clone()),
             rs1: Register::S0,
@@ -557,7 +563,7 @@ impl FunctionContext {
                     }
                 } else {
                     match rid {
-                        RegisterId::Arg { .. } => {
+                        RegisterId::Arg { .. } | RegisterId::Temp { .. } => {
                             // mem2reg makes args register disordered, allocate space if not exists yet.
                             let old_rid = self.get_rid();
                             self.set_rid(rid.clone());
@@ -566,9 +572,7 @@ impl FunctionContext {
                             let offset = self.temp_register_offset.get(&rid).cloned().unwrap();
                             self.pop_accumulator(offset, dtype);
                         }
-                        RegisterId::Local { .. } | RegisterId::Temp { .. } => {
-                            panic!("can't find temp register: {:?}", rid)
-                        }
+                        RegisterId::Local { .. } => panic!("can't find temp register: {:?}", rid),
                     }
                 }
             }
@@ -886,7 +890,6 @@ impl FunctionContext {
         for (aid, arg) in args.iter().enumerate() {
             self.translate_operand(arg);
             self.move_tmp_to_accumulator(&arg.dtype());
-            let old_ird = self.get_rid();
             self.set_rid(RegisterId::arg(block_id, aid));
             self.push_phinode(&arg.dtype());
             let offset = self
@@ -899,7 +902,6 @@ impl FunctionContext {
                 rs2: self.alloc_accumulator(&arg.dtype()),
                 imm: Immediate::Value((*offset as i128 * -1) as u64),
             });
-            self.set_rid(old_ird);
         }
     }
 

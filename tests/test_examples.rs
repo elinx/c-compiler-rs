@@ -80,9 +80,9 @@ const ASMGEN_SMALL_TEST_IGNORE_LIST: [&str; 9] = [
     "temp2.ir",
 ];
 
-const ASM_GEN_DIR: [&str; 1] = ["examples/ir3"];
+const ASM_GEN_DIR: [&str; 1] = ["examples/ir4"];
 
-const ASM_GEN_FILE: [&str; 1] = ["foo2.ir"];
+const ASM_GEN_FILE: [&str; 1] = ["complete_cond.ir"];
 
 #[test]
 fn test_examples_write_c() {
