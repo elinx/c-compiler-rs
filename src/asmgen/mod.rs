@@ -10,7 +10,7 @@ use crate::asm::{
     SymbolType, Variable,
 };
 use crate::asm::{Directive, SectionType};
-use crate::ir::{self, HasDtype, Named, RegisterId};
+use crate::ir::{self, HasDtype, JumpArg, Named, RegisterId};
 use crate::ir::{Dtype, Operand};
 use crate::Translate;
 use lang_c::ast::{self, BinaryOperator, Float, Integer, UnaryOperator};
@@ -180,7 +180,7 @@ impl Asmgen {
             func_context.translate_allocations(&definition.allocations);
             for (bid, block) in &definition.blocks {
                 let block_label = asm::Label::new(name, *bid);
-                func_context.translate_phinodes(bid, &block.phinodes);
+                func_context.translate_phinodes(&definition.bid_init, bid, &block.phinodes);
                 func_context.translate_instructions(bid, &block.instructions);
                 func_context.translate_block_exit(blocks.len(), name, &block.exit);
                 blocks.push(asm::Block::new(
@@ -204,6 +204,10 @@ impl FunctionContext {
 
     fn set_rid(&mut self, rid: RegisterId) {
         self.rid = Some(rid);
+    }
+
+    fn get_rid(&mut self) -> RegisterId {
+        self.rid.clone().unwrap()
     }
 
     fn push_instr(&mut self, instr: asm::Instruction) {
@@ -265,13 +269,26 @@ impl FunctionContext {
         })
     }
 
-    fn push_phinode(&mut self, dtype: Dtype, offset: usize) -> usize {
+    fn push_parameter(&mut self, dtype: Dtype, offset: usize) -> usize {
         self.temp_register_offset.insert(
             self.rid.as_ref().unwrap().clone(),
             (offset as i128 * -1) as usize,
         );
         let size = self.aligned_dtype_size(&dtype);
         offset + size
+    }
+
+    fn push_phinode(&mut self, dtype: &Dtype) {
+        if self
+            .temp_register_offset
+            .get(&self.rid.as_ref().unwrap())
+            .is_none()
+        {
+            let size = self.aligned_dtype_size(dtype);
+            let offset = self.stack_offset(size);
+            self.temp_register_offset
+                .insert(self.rid.as_ref().unwrap().clone(), offset);
+        }
     }
 
     fn push_arg(&mut self, dtype: Dtype, offset: usize) -> usize {
@@ -331,12 +348,35 @@ impl FunctionContext {
         self.returns.push(bid);
     }
 
-    fn translate_phinodes(&mut self, bid: &ir::BlockId, phinodes: &Vec<Named<Dtype>>) {
+    fn translate_parameters(&mut self, bid: &ir::BlockId, phinodes: &Vec<Named<Dtype>>) {
         let mut offset = 0;
         for (aid, dtype) in phinodes.iter().enumerate() {
             let rid = RegisterId::arg(bid.clone(), aid);
             self.set_rid(rid);
-            offset = self.push_phinode(dtype.deref().clone(), offset);
+            offset = self.push_parameter(dtype.deref().clone(), offset);
+        }
+    }
+
+    fn translate_normal_phinodes(&mut self, bid: &ir::BlockId, phinodes: &Vec<Named<Dtype>>) {
+        for (aid, dtype) in phinodes.iter().enumerate() {
+            let rid = RegisterId::arg(bid.clone(), aid);
+            self.set_rid(rid);
+            self.push_phinode(dtype.deref());
+        }
+    }
+
+    fn translate_phinodes(
+        &mut self,
+        bid_init: &ir::BlockId,
+        bid: &ir::BlockId,
+        phinodes: &Vec<Named<Dtype>>,
+    ) {
+        if !phinodes.is_empty() {
+            if *bid_init == *bid {
+                self.translate_parameters(bid, phinodes);
+            } else {
+                self.translate_normal_phinodes(bid, phinodes);
+            }
         }
     }
 
@@ -516,7 +556,20 @@ impl FunctionContext {
                         }
                     }
                 } else {
-                    panic!("can't find temp register");
+                    match rid {
+                        RegisterId::Arg { .. } => {
+                            // mem2reg makes args register disordered, allocate space if not exists yet.
+                            let old_rid = self.get_rid();
+                            self.set_rid(rid.clone());
+                            self.push_phinode(dtype);
+                            self.set_rid(old_rid);
+                            let offset = self.temp_register_offset.get(&rid).cloned().unwrap();
+                            self.pop_accumulator(offset, dtype);
+                        }
+                        RegisterId::Local { .. } | RegisterId::Temp { .. } => {
+                            panic!("can't find temp register: {:?}", rid)
+                        }
+                    }
                 }
             }
         }
@@ -827,11 +880,35 @@ impl FunctionContext {
         self.push_accumulator(dtype);
     }
 
+    fn translate_jumparg(&mut self, arg: &JumpArg) {
+        let args = &arg.args;
+        let block_id = arg.bid;
+        for (aid, arg) in args.iter().enumerate() {
+            self.translate_operand(arg);
+            self.move_tmp_to_accumulator(&arg.dtype());
+            let old_ird = self.get_rid();
+            self.set_rid(RegisterId::arg(block_id, aid));
+            self.push_phinode(&arg.dtype());
+            let offset = self
+                .temp_register_offset
+                .get(&self.rid.as_ref().unwrap())
+                .unwrap();
+            self.instrs.push(asm::Instruction::SType {
+                instr: SType::store(arg.dtype()),
+                rs1: Register::S0,
+                rs2: self.alloc_accumulator(&arg.dtype()),
+                imm: Immediate::Value((*offset as i128 * -1) as u64),
+            });
+            self.set_rid(old_ird);
+        }
+    }
+
     fn translate_block_exit(&mut self, bid: usize, name: &str, exit: &ir::BlockExit) {
         match exit {
             ir::BlockExit::Jump { arg } => {
+                self.translate_jumparg(arg);
                 self.push_instr(asm::Instruction::Pseudo(Pseudo::J {
-                    offset: asm::Label::new(name, arg.deref().bid),
+                    offset: asm::Label::new(name, arg.bid),
                 }));
             }
             ir::BlockExit::ConditionalJump {
@@ -839,6 +916,8 @@ impl FunctionContext {
                 arg_then,
                 arg_else,
             } => {
+                self.translate_jumparg(arg_then.deref());
+                self.translate_jumparg(arg_else.deref());
                 let then_label = asm::Label::new(name, arg_then.deref().bid);
                 let else_label = asm::Label::new(name, arg_else.deref().bid);
                 self.translate_operand(condition);
@@ -861,6 +940,7 @@ impl FunctionContext {
             } => {
                 self.translate_operand(value);
                 cases.iter().for_each(|(constant, jump)| {
+                    self.translate_jumparg(jump);
                     let imm = constant.get_int().unwrap().0 as u64;
                     self.push_instr(asm::Instruction::Pseudo(Pseudo::Li {
                         rd: Register::A0,
@@ -873,6 +953,7 @@ impl FunctionContext {
                         imm: asm::Label::new(name, jump.deref().bid),
                     });
                 });
+                self.translate_jumparg(default.deref());
                 self.push_instr(asm::Instruction::Pseudo(Pseudo::J {
                     offset: asm::Label::new(name, default.deref().bid),
                 }));
